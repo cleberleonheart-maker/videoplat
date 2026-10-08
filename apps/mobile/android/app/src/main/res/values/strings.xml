@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Câmera VideoPlat</string>
+    <string name="title_activity_main">Câmera VideoPlat</string>
+    <string name="package_name">app.videoplat.camera</string>
+    <string name="custom_url_scheme">app.videoplat.camera</string>
+</resources>

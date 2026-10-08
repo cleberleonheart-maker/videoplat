@@ -1,0 +1,262 @@
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["fullTextSearchPostgres"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum VideoVisibility {
+  PUBLIC
+  UNLISTED
+  PRIVATE
+}
+
+enum VideoStatus {
+  UPLOADING
+  PROCESSING
+  READY
+  FAILED
+}
+
+enum ReactionType {
+  LIKE
+  DISLIKE
+}
+
+model User {
+  id           String   @id @default(uuid())
+  email        String   @unique
+  passwordHash String?
+  username     String   @unique
+  displayName  String
+  avatarKey    String?
+  bannerKey    String?
+  bio          String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  videos        Video[]
+  comments      Comment[]
+  reactions     VideoReaction[]
+  subscriptions Subscription[]
+  playlists     Playlist[]
+  watchHistory  WatchHistory[]
+
+  @@map("users")
+}
+
+model Channel {
+  id          String   @id @default(uuid())
+  handle      String   @unique
+  name        String
+  description String?
+  avatarKey   String?
+  bannerKey   String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  subscriptions Subscription[]
+  videos        Video[]
+
+  @@map("channels")
+}
+
+// Canal é uma projeção 1:1 de um User, criada no primeiro upload.
+// Mantemos separado para não acoplar a semântica de canal à de conta.
+model Video {
+  id          String          @id @default(uuid())
+  channelId   String
+  uploaderId  String
+  title       String
+  description String?
+  tags        String[]
+  status      VideoStatus     @default(UPLOADING)
+  visibility  VideoVisibility @default(PUBLIC)
+
+  durationSec Int?
+  width       Int?
+  height      Int?
+  sizeBytes   BigInt?
+  sourceKey   String?
+  errorReason String?
+
+  publishedAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  channel  Channel @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  uploader User    @relation(fields: [uploaderId], references: [id], onDelete: Cascade)
+
+  renditions VideoRendition[]
+  thumbnails VideoThumbnail[]
+  comments   Comment[]
+  reactions  VideoReaction[]
+  playlists  PlaylistVideo[]
+  views      VideoView[]
+  history    WatchHistory[]
+  stats      VideoStats?
+
+  @@index([channelId, publishedAt(sort: Desc)])
+  @@index([status, visibility, publishedAt(sort: Desc)])
+  @@index([uploaderId])
+  @@map("videos")
+}
+
+model VideoRendition {
+  id          String   @id @default(uuid())
+  videoId     String
+  label       String
+  width       Int
+  height      Int
+  bitrateKbps Int
+  playlistKey String
+  createdAt   DateTime @default(now())
+
+  video Video @relation(fields: [videoId], references: [id], onDelete: Cascade)
+
+  @@unique([videoId, label])
+  @@index([videoId])
+  @@map("video_renditions")
+}
+
+model VideoThumbnail {
+  id         String   @id @default(uuid())
+  videoId    String
+  label      String
+  width      Int
+  height     Int
+  objectKey  String
+  positionMs Int?
+  createdAt  DateTime @default(now())
+
+  video Video @relation(fields: [videoId], references: [id], onDelete: Cascade)
+
+  @@unique([videoId, label])
+  @@index([videoId])
+  @@map("video_thumbnails")
+}
+
+model Comment {
+  id        String    @id @default(uuid())
+  videoId   String
+  authorId  String
+  parentId  String?
+  body      String
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  video   Video     @relation(fields: [videoId], references: [id], onDelete: Cascade)
+  author  User      @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  parent  Comment?  @relation("thread", fields: [parentId], references: [id], onDelete: Cascade)
+  replies Comment[] @relation("thread")
+
+  @@index([videoId, createdAt(sort: Desc)])
+  @@index([parentId])
+  @@map("comments")
+}
+
+model VideoReaction {
+  id        String       @id @default(uuid())
+  videoId   String
+  userId    String
+  type      ReactionType
+  createdAt DateTime     @default(now())
+
+  video Video @relation(fields: [videoId], references: [id], onDelete: Cascade)
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([videoId, userId])
+  @@index([videoId, type])
+  @@map("video_reactions")
+}
+
+// Contagem desnormalizada para listagem sem COUNT(*) por vídeo.
+model VideoView {
+  id        String   @id @default(uuid())
+  videoId   String
+  userId    String?
+  ipHash    String?
+  createdAt DateTime @default(now())
+
+  video Video @relation(fields: [videoId], references: [id], onDelete: Cascade)
+
+  @@index([videoId, createdAt(sort: Desc)])
+  @@index([userId, createdAt(sort: Desc)])
+  @@map("video_views")
+}
+
+model VideoStats {
+  videoId  String @id
+  views    Int    @default(0)
+  likes    Int    @default(0)
+  dislikes Int    @default(0)
+  comments Int    @default(0)
+
+  video Video @relation(fields: [videoId], references: [id], onDelete: Cascade)
+
+  @@map("video_stats")
+}
+
+model Subscription {
+  id           String   @id @default(uuid())
+  channelId    String
+  subscriberId String
+  createdAt    DateTime @default(now())
+
+  channel    Channel @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  subscriber User    @relation(fields: [subscriberId], references: [id], onDelete: Cascade)
+
+  @@unique([channelId, subscriberId])
+  @@index([subscriberId])
+  @@map("subscriptions")
+}
+
+model Playlist {
+  id          String   @id @default(uuid())
+  ownerId     String
+  title       String
+  description String?
+  isPublic    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  owner  User            @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  videos PlaylistVideo[]
+
+  @@index([ownerId])
+  @@map("playlists")
+}
+
+model PlaylistVideo {
+  id         String   @id @default(uuid())
+  playlistId String
+  videoId    String
+  position   Int
+  createdAt  DateTime @default(now())
+
+  playlist Playlist @relation(fields: [playlistId], references: [id], onDelete: Cascade)
+  video    Video    @relation(fields: [videoId], references: [id], onDelete: Cascade)
+
+  @@unique([playlistId, videoId])
+  @@unique([playlistId, position])
+  @@map("playlist_videos")
+}
+
+model WatchHistory {
+  id          String   @id @default(uuid())
+  userId      String
+  videoId     String
+  positionSec Int      @default(0)
+  watchedAt   DateTime @default(now())
+
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  video Video @relation(fields: [videoId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, videoId])
+  @@index([userId, watchedAt(sort: Desc)])
+  @@map("watch_history")
+}
