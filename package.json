@@ -1,0 +1,36 @@
+{
+  "name": "videoplat",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "apps/api",
+    "apps/worker",
+    "apps/web"
+  ],
+  "scripts": {
+    "dev": "concurrently -n api,worker,web -c blue,magenta,green \"npm:dev:api\" \"npm:dev:worker\" \"npm:dev:web\"",
+    "dev:api": "npm run start:dev --workspace @videoplat/api",
+    "dev:worker": "npm run dev --workspace @videoplat/worker",
+    "dev:web": "npm run dev --workspace @videoplat/web",
+    "build": "npm run build --workspace @videoplat/api && npm run build --workspace @videoplat/worker && npm run build --workspace @videoplat/web",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "db:generate": "npm run prisma:generate --workspace @videoplat/api",
+    "db:push": "npm run prisma:push --workspace @videoplat/api",
+    "db:migrate": "npm run prisma:migrate --workspace @videoplat/api",
+    "db:studio": "npm run prisma:studio --workspace @videoplat/api",
+    "apk": "npm run apk --prefix apps/mobile",
+    "apk:release": "npm run apk:release --prefix apps/mobile",
+    "apk:info": "aapt dump badging apps/mobile/android/app/build/outputs/apk/debug/app-debug.apk"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2",
+    "fast-check": "^4.10.2",
+    "typescript": "^5.7.3"
+  },
+  "engines": {
+    "node": ">=20.11"
+  },
+  "dependencies": {
+    "rxjs": "^7.8.2"
+  }
+}
