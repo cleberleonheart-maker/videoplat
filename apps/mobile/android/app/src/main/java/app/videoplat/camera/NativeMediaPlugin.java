@@ -2,6 +2,7 @@ package app.videoplat.camera;
 
 import android.app.Activity;
 import android.content.ContentValues;
+import android.content.Intent;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Environment;
@@ -125,6 +126,27 @@ public class NativeMediaPlugin extends Plugin {
         JSObject ret = new JSObject();
         ret.put("path", "capturas/" + fileName);
         call.resolve(ret);
+    }
+
+    /**
+     * Abre uma URL no navegador externo do aparelho (usado pelo update checker
+     * para levar o usuário ao download do novo APK).
+     */
+    @PluginMethod
+    public void openExternal(PluginCall call) {
+        String url = call.getString("url");
+        if (url == null || url.isEmpty()) {
+            call.reject("url obrigatório");
+            return;
+        }
+        try {
+            Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            getContext().startActivity(intent);
+            call.resolve();
+        } catch (Exception ex) {
+            call.reject("Não foi possível abrir o link: " + ex.getMessage(), ex);
+        }
     }
 
     private Uri insertIntoMediaStore(Activity activity, File src, String fileName, String mimeType)

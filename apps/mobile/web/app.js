@@ -50,6 +50,11 @@ const VP_API = 'https://videoplat.18-216-119-208.sslip.io';
 const TOKEN_KEY = 'accessToken';
 const USER_KEY = 'vp_user';
 const GALLERY_KEY = 'vp_gallery_v1';
+
+// ---- Update checker ----
+const UPDATE_MANIFEST_URL =
+  'https://raw.githubusercontent.com/cleberleonheart-maker/videoplat/main/apps/mobile/update-manifest.json';
+const UPDATE_SKIP_KEY = 'vp_update_skipped';
 const camPrev = () => {
   try {
     return window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.CameraPreview
@@ -120,6 +125,12 @@ const state = {
   myvideosError: null,
   myvideosItems: [],
   myvideosPending: false,
+  // atualização do app
+  appVersion: null,
+  appBuild: null,
+  updateInfo: null,
+  updateVisible: false,
+  updateChecking: false,
 };
 
 const v = {
@@ -1646,6 +1657,134 @@ function buildMyVideosModal() {
 }
 
 /* ============================================================
+ * UPDATE CHECKER — compara a versão instalada com um manifesto
+ * público (apps/mobile/update-manifest.json) e avisa quando há
+ * uma versão nova para baixar.
+ * ============================================================ */
+
+function parseVer(s) {
+  const m = String(s || '').match(/(\d+)(?:\.(\d+))?(?:\.(\d+))?/);
+  return m ? [Number(m[1]), Number(m[2] || 0), Number(m[3] || 0)] : null;
+}
+
+function verGt(a, b) {
+  const pa = parseVer(a);
+  const pb = parseVer(b);
+  if (!pa || !pb) return false;
+  for (let i = 0; i < 3; i++) if (pa[i] !== pb[i]) return pa[i] > pb[i];
+  return false;
+}
+
+async function readInstalledVersion() {
+  state.appVersion = state.appVersion || '1.0';
+  if (isNative) {
+    try {
+      const info = await core().App.getInfo();
+      if (info && info.version) state.appVersion = String(info.version);
+      if (info && info.build) state.appBuild = String(info.build);
+    } catch (_) {
+      /* sem plugin App: mantém o fallback */
+    }
+  }
+  return state.appVersion;
+}
+
+function updateIsNewer(man) {
+  const manCode = Number(man.versionCode);
+  const curCode = state.appBuild ? Number(state.appBuild) : NaN;
+  if (Number.isFinite(manCode) && Number.isFinite(curCode)) return manCode > curCode;
+  return verGt(man.version, state.appVersion);
+}
+
+function updateKeyOf(man) {
+  return man.versionCode != null ? String(man.versionCode) : String(man.version);
+}
+
+function isUpdateSkipped(man) {
+  try {
+    return localStorage.getItem(UPDATE_SKIP_KEY) === updateKeyOf(man);
+  } catch (_) {
+    return false;
+  }
+}
+
+function skipUpdate(man) {
+  try {
+    localStorage.setItem(UPDATE_SKIP_KEY, updateKeyOf(man));
+  } catch (_) {}
+}
+
+async function checkForUpdate(manual) {
+  if (!isNative) {
+    if (manual) {
+      state.toast = { ok: false, msg: 'A verificação de atualização existe só no app Android.' };
+      render();
+    }
+    return;
+  }
+  if (state.updateChecking) return;
+  state.updateChecking = true;
+  if (manual) {
+    state.toast = null;
+    render();
+  }
+  try {
+    const res = await fetch(UPDATE_MANIFEST_URL, { cache: 'no-store' });
+    if (!res.ok) throw new Error('manifesto indisponível (' + res.status + ')');
+    const man = await res.json();
+    if (!man || !man.version) throw new Error('manifesto inválido');
+    await readInstalledVersion();
+    if (updateIsNewer(man)) {
+      state.updateInfo = man;
+      state.updateVisible = manual || !isUpdateSkipped(man);
+      if (manual) state.toast = { ok: true, msg: 'Nova versão disponível (' + man.version + ')' };
+    } else {
+      state.updateInfo = null;
+      state.updateVisible = false;
+      if (manual) state.toast = { ok: true, msg: 'Você já está na última versão (' + state.appVersion + ')' };
+    }
+  } catch (e) {
+    if (manual) state.toast = { ok: false, msg: 'Falha ao verificar: ' + (e && e.message ? e.message : e) };
+  }
+  state.updateChecking = false;
+  render();
+}
+
+function dismissUpdate() {
+  if (state.updateInfo) skipUpdate(state.updateInfo);
+  state.updateVisible = false;
+  render();
+}
+
+async function downloadUpdate() {
+  const man = state.updateInfo;
+  if (!man || !man.apkUrl) return;
+  try {
+    if (isNative && core().NativeMedia && core().NativeMedia.openExternal) {
+      await core().NativeMedia.openExternal({ url: man.apkUrl });
+      return;
+    }
+  } catch (_) {}
+  window.open(man.apkUrl, '_blank');
+}
+
+function buildUpdateBanner() {
+  const man = state.updateInfo;
+  const bar = el('div', 'update-banner');
+  const txt = el('div', 'ub-text');
+  txt.appendChild(el('div', 'ub-head', '⬆ Nova versão ' + String(man.version || '') + ' disponível'));
+  if (man.notes) txt.appendChild(el('div', 'ub-notes', String(man.notes).replace(/</g, '&lt;')));
+  bar.appendChild(txt);
+  const dl = el('button', 'ub-btn', 'Baixar');
+  dl.addEventListener('click', downloadUpdate);
+  const later = el('button', 'ub-btn ghost', 'Depois');
+  later.addEventListener('click', dismissUpdate);
+  bar.appendChild(dl);
+  bar.appendChild(later);
+  return bar;
+}
+
+/* ============================================================
  * RENDER — monta a interface inteira
  * ============================================================ */
 
@@ -1678,6 +1817,20 @@ function buildApp() {
   topbar.appendChild(title);
   topbar.appendChild(tools);
   app.appendChild(topbar);
+
+  // banner de atualização disponível
+  if (
+    state.updateInfo &&
+    state.updateVisible &&
+    state.rec === 'inactive' &&
+    !state.panel &&
+    !state.preview &&
+    !state.loginOpen &&
+    !state.publishOpen &&
+    !state.myvideosOpen
+  ) {
+    app.appendChild(buildUpdateBanner());
+  }
 
   // palco
   const stage = el('div', 'stage');
@@ -1947,6 +2100,9 @@ function buildPanel() {
     opts.appendChild(setToggle('Grade de terços', state.grid, () => (state.grid = !state.grid, render()), () => state.nativeMode));
     opts.appendChild(setToggle('Espelho', state.mirror, () => (state.mirror = !state.mirror, render()), () => state.rec !== 'inactive' || state.nativeMode));
     opts.appendChild(setToggle('Som no vídeo', state.audioOn, () => (state.audioOn = !state.audioOn, render()), () => state.mode !== 'video' || state.rec !== 'inactive' || state.nativeMode));
+    opts.appendChild(setGroup('App'));
+    opts.appendChild(setNav('Versão do app', state.appVersion || '…', () => {}, () => true));
+    opts.appendChild(setNav('Verificar atualização', state.updateChecking ? 'Verificando…' : '', () => checkForUpdate(true), () => state.updateChecking));
   } else if (state.panel === 'timer') {
     title.insertBefore(document.createTextNode('Timer'), close);
     TIMER_OPTIONS.forEach((t) => {
@@ -2145,4 +2301,11 @@ document.addEventListener('DOMContentLoaded', () => {
   } catch (_) {}
   restoreGallery();
   startCamera();
+
+  // update checker: lê a versão instalada, verifica no boot e ao retomar o app
+  readInstalledVersion();
+  if (isNative) {
+    document.addEventListener('resume', () => checkForUpdate(false));
+  }
+  setTimeout(() => checkForUpdate(false), 2500);
 });
