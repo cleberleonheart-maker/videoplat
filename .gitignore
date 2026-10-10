@@ -37,3 +37,4 @@ apps/mobile/android/capacitor-cordova-android-plugins/build/
 .env.*
 !.env.example
 secrets/
+*.pem
