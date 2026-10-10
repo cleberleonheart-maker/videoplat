@@ -1,28 +1,5 @@
 'use strict';
 
-/* farol de diagnóstico: texto verde no canto superior esquerdo,
- * visível na tela do aparelho (permite confirmar build/WebView/frames). */
-(function () {
-  var m = /Chrome\/([0-9]+)/.exec(navigator.userAgent);
-  var wv = m ? m[1] : '?';
-  var build = '1.0-1830';
-  function pinta() {
-    var el = document.getElementById('prova');
-    if (!el) return;
-    var video = document.getElementById('source');
-    var f = -2;
-    if (video) {
-      try { f = totalVideoFramesOf(video); } catch (e) { f = -3; }
-    }
-    var fe = f < 0 ? 'f=-' + (f < -2 ? 'erro' : 'sem') : 'f=' + f;
-    var readyP = typeof state !== 'undefined' ? state.ready : '-';
-    var probeP = typeof state !== 'undefined' && state._probeState ? state._probeState : '-';
-    el.textContent = build + ' webview' + wv + '\n' + fe + ' p=' + probeP + ' ready=' + readyP;
-  }
-  try { pinta(); } catch (e) {}
-  setInterval(function () { try { pinta(); } catch (e) {} }, 1000);
-})();
-
 /* ============================================================
  * Câmera VideoPlat — app autônomo (foto + vídeo) para Android
  * WebView (Capacitor). Sem dependências externas.
@@ -66,6 +43,13 @@ const TIMER_OPTIONS = [
 
 const isNative = typeof window.Capacitor !== 'undefined' && window.Capacitor.getPlatform() !== 'web';
 const core = () => window.Capacitor.Plugins;
+
+// ---- Publicação no VideoPlat ----
+// Origem do site (mesma usada pelo app que navega). A API fica em /api.
+const VP_API = 'https://videoplat.18-216-119-208.sslip.io';
+const TOKEN_KEY = 'accessToken';
+const USER_KEY = 'vp_user';
+const GALLERY_KEY = 'vp_gallery_v1';
 const camPrev = () => {
   try {
     return window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.CameraPreview
@@ -113,6 +97,29 @@ const state = {
   _recoveries: 0,
   _probeState: '', // ok | black | dim | erro (preview via canvas)
   nativeMode: false, // preview nativo (CameraPreview) no lugar do WebView
+  // conta / publicação no VideoPlat
+  accountEmail: null,
+  loginOpen: false,
+  loginBusy: false,
+  loginError: null,
+  loginEmail: '',
+  loginPassword: '',
+  publishItem: null,
+  publishBusy: false,
+  publishProgress: 0,
+  publishMsg: null,
+  // formulário de publicação
+  publishOpen: false,
+  publishTarget: null,
+  publishTitle: '',
+  publishDesc: '',
+  publishVisibility: 'PUBLIC',
+  // meus vídeos
+  myvideosOpen: false,
+  myvideosBusy: false,
+  myvideosError: null,
+  myvideosItems: [],
+  myvideosPending: false,
 };
 
 const v = {
@@ -695,7 +702,7 @@ async function startNativeRecord() {
   const p = camPrev();
   if (!p) return false;
   try {
-    await p.startRecordVideo({ cameraDirection: nativeDir() });
+    await p.startRecordVideo({ cameraDirection: nativeDir(), position: state.facing === 'user' ? 'front' : 'rear' });
     state.rec = 'recording';
     refs.recordNative = Date.now();
     render();
@@ -733,6 +740,7 @@ async function stopNativeRecord() {
       kind: 'video',
       url: uri,
       blob: null,
+      srcPath: fp,
       width: 0,
       height: 0,
       size: 0,
@@ -762,8 +770,9 @@ async function nativeTorch() {
   if (!p) return;
   try {
     const modes = await p.getSupportedFlashModes();
-    if (!modes || !modes.value) throw new Error('flash indisponível');
-    const has = modes.value.indexOf('torch') >= 0;
+    const list = (modes && (modes.result || modes.value)) || [];
+    if (!list.length) throw new Error('flash indisponível');
+    const has = list.indexOf('torch') >= 0;
     if (!has) throw new Error('lanterna indisponível');
     await p.setFlashMode(state.torch ? 'off' : 'torch');
     state.torch = !state.torch;
@@ -779,6 +788,7 @@ async function nativeTorch() {
 function addToGallery(item) {
   state.gallery = [item, ...state.gallery];
   render();
+  persistItem(item);
 }
 
 function doCapture() {
@@ -1078,8 +1088,561 @@ function removeItem(item) {
     state.gallery.splice(i, 1);
     URL.revokeObjectURL(item.url);
   }
+  deletePersisted(item);
   if (state.preview === item) state.preview = null;
   render();
+}
+
+/* ============================================================
+ * GALERIA PERSISTENTE — guarda as capturas no armazenamento do app
+ * ============================================================ */
+
+function galleryExt(item) {
+  return item.kind === 'photo' ? 'jpg' : fallbackExtFor(item.mime);
+}
+
+function base64ToBlob(b64, mime) {
+  const s = String(b64 || '');
+  const clean = s.indexOf(',') >= 0 ? s.slice(s.indexOf(',') + 1) : s;
+  const bin = atob(clean);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return new Blob([bytes], { type: mime || 'application/octet-stream' });
+}
+
+async function readDataFile(path) {
+  const res = await core().Filesystem.readFile({ path, directory: 'DATA' });
+  return typeof res.data === 'string' ? res.data : String(res.data);
+}
+
+function updateManifest() {
+  try {
+    const list = state.gallery
+      .filter((it) => it.persistedPath)
+      .map((it) => ({
+        id: it.id,
+        kind: it.kind,
+        mime: it.mime,
+        width: it.width,
+        height: it.height,
+        size: it.size,
+        createdAt: it.createdAt,
+        path: it.persistedPath,
+        fileName: it.fileName,
+      }));
+    localStorage.setItem(GALLERY_KEY, JSON.stringify(list));
+  } catch (_) {}
+}
+
+async function persistItem(item) {
+  if (!isNative || !item || item.persistedPath) return;
+  const fileName = `${item.id}.${galleryExt(item)}`;
+  try {
+    if (item.blob) {
+      const base64 = await toBase64(item.blob);
+      await core().Filesystem.writeFile({
+        path: `capturas/${fileName}`,
+        data: base64,
+        directory: 'DATA',
+        recursive: true,
+      });
+    } else if (item.srcPath) {
+      await core().NativeMedia.copyToData({ srcPath: item.srcPath, fileName });
+    } else {
+      return;
+    }
+    item.persistedPath = `capturas/${fileName}`;
+    item.fileName = fileName;
+    updateManifest();
+  } catch (e) {
+    console.warn('Falha ao persistir captura', e);
+  }
+}
+
+async function deletePersisted(item) {
+  try {
+    if (item && item.persistedPath) {
+      await core().Filesystem.deleteFile({ path: item.persistedPath, directory: 'DATA' });
+    }
+  } catch (_) {}
+  updateManifest();
+}
+
+async function restoreGallery() {
+  if (!isNative) return;
+  let list = [];
+  try {
+    list = JSON.parse(localStorage.getItem(GALLERY_KEY) || '[]');
+  } catch (_) {
+    list = [];
+  }
+  const MAX = 24;
+  for (const meta of list.slice(0, MAX)) {
+    try {
+      const base64 = await readDataFile(meta.path);
+      const blob = base64ToBlob(base64, meta.mime);
+      state.gallery.push({
+        id: meta.id,
+        kind: meta.kind,
+        url: URL.createObjectURL(blob),
+        blob,
+        width: meta.width,
+        height: meta.height,
+        size: blob.size,
+        createdAt: meta.createdAt,
+        mime: meta.mime,
+        persistedPath: meta.path,
+        fileName: meta.fileName,
+      });
+    } catch (_) {
+      /* arquivo removido: ignora */
+    }
+  }
+  render();
+}
+
+async function ensureBlob(item) {
+  if (item.blob) return item.blob;
+  if (item.persistedPath) {
+    const base64 = await readDataFile(item.persistedPath);
+    return base64ToBlob(base64, item.mime);
+  }
+  if (item.srcPath && isNative) {
+    const fileName = `${item.id}.${galleryExt(item)}`;
+    const res = await core().NativeMedia.copyToData({ srcPath: item.srcPath, fileName });
+    item.persistedPath = (res && res.path) || `capturas/${fileName}`;
+    item.fileName = fileName;
+    updateManifest();
+    const base64 = await readDataFile(item.persistedPath);
+    return base64ToBlob(base64, item.mime);
+  }
+  return null;
+}
+
+/* ============================================================
+ * CONTA + PUBLICAÇÃO NO VIDEPLAT
+ * ============================================================ */
+
+function getToken() {
+  try {
+    return localStorage.getItem(TOKEN_KEY);
+  } catch (_) {
+    return null;
+  }
+}
+
+function setSession(body) {
+  try {
+    localStorage.setItem(TOKEN_KEY, body.accessToken);
+    const u = body.user || {};
+    const label = u.email || u.username || 'conta';
+    localStorage.setItem(USER_KEY, label);
+    state.accountEmail = label;
+  } catch (_) {}
+}
+
+function clearSession() {
+  try {
+    localStorage.removeItem(TOKEN_KEY);
+    localStorage.removeItem(USER_KEY);
+  } catch (_) {}
+  state.accountEmail = null;
+}
+
+async function apiJson(path, opts = {}) {
+  const res = await fetch(VP_API + path, {
+    method: opts.method || 'GET',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(opts.token ? { Authorization: 'Bearer ' + opts.token } : {}),
+    },
+    body: opts.body ? JSON.stringify(opts.body) : undefined,
+  });
+  let data = {};
+  try {
+    data = await res.json();
+  } catch (_) {}
+  if (!res.ok) {
+    const err = new Error(data.message || 'Falha na requisição (' + res.status + ')');
+    err.status = res.status;
+    throw err;
+  }
+  return data;
+}
+
+function openLogin(item) {
+  state.publishItem = item || null;
+  state.loginOpen = true;
+  state.loginError = null;
+  render();
+}
+
+async function submitLogin() {
+  state.loginBusy = true;
+  state.loginError = null;
+  render();
+  try {
+    const body = await apiJson('/api/auth/login', {
+      method: 'POST',
+      body: { email: state.loginEmail.trim(), password: state.loginPassword },
+    });
+    setSession(body);
+    state.loginOpen = false;
+    state.loginBusy = false;
+    state.loginPassword = '';
+    const target = state.publishItem;
+    const wantMy = state.myvideosPending;
+    state.publishItem = null;
+    state.myvideosPending = false;
+    render();
+    if (target) openPublish(target);
+    else if (wantMy) openMyVideos();
+  } catch (e) {
+    state.loginBusy = false;
+    state.loginError = e && e.message ? e.message : 'Não foi possível entrar';
+    render();
+  }
+}
+
+function openPublish(item) {
+  state.publishOpen = true;
+  state.publishTarget = item;
+  state.publishTitle = 'Câmera ' + stamp();
+  state.publishDesc = '';
+  state.publishVisibility = 'PUBLIC';
+  state.publishMsg = null;
+  state.publishProgress = 0;
+  render();
+}
+
+async function doPublish(item) {
+  if (!isNative) {
+    state.toast = { ok: false, msg: 'Publicar está disponível apenas no app.' };
+    render();
+    return;
+  }
+  if (!getToken()) {
+    openLogin(item);
+    return;
+  }
+  openPublish(item);
+}
+
+async function runPublish() {
+  const item = state.publishTarget;
+  if (!item || state.publishBusy) return;
+  state.publishBusy = true;
+  state.publishMsg = 'Preparando…';
+  state.publishProgress = 0;
+  render();
+  try {
+    const blob = await ensureBlob(item);
+    if (!blob) throw new Error('arquivo do vídeo indisponível');
+    const rawType = item.mime && item.mime.indexOf('video/') === 0 ? item.mime : 'video/mp4';
+    const contentType = rawType.split(';')[0].trim();
+    const out = await uploadVideoBlob(blob, contentType, {
+      title: state.publishTitle.trim() || 'Câmera ' + stamp(),
+      description: state.publishDesc.trim(),
+      visibility: state.publishVisibility,
+    });
+    state.publishMsg = 'Publicado! Processando no site…';
+    state.publishBusy = false;
+    render();
+    return out;
+  } catch (e) {
+    state.publishBusy = false;
+    state.publishMsg = null;
+    state.toast = { ok: false, msg: 'Falha ao publicar: ' + (e && e.message ? e.message : e) };
+    render();
+  }
+}
+
+async function uploadVideoBlob(blob, contentType, meta = {}) {
+  const token = getToken();
+  const ext =
+    contentType.indexOf('quicktime') >= 0 ? 'mov' : contentType.indexOf('webm') >= 0 ? 'webm' : 'mp4';
+  const title = (meta.title && meta.title.trim()) || 'Câmera ' + stamp();
+  const session = await apiJson('/api/uploads/initiate', {
+    method: 'POST',
+    token,
+    body: {
+      fileName: 'camera-' + stamp() + '.' + ext,
+      contentType,
+      sizeBytes: blob.size,
+      title,
+    },
+  });
+  const parts = [];
+  let uploaded = 0;
+  const queue = session.parts.slice();
+  const workers = Math.max(1, Math.min(4, session.partsCount));
+  const worker = async () => {
+    while (queue.length) {
+      const part = queue.shift();
+      const start = (part.partNumber - 1) * session.partSize;
+      const end = Math.min(start + session.partSize, blob.size);
+      const chunk = blob.slice(start, end, contentType);
+      const res = await fetch(part.url, { method: 'PUT', body: chunk });
+      if (!res.ok) throw new Error('falha no envio (parte ' + part.partNumber + ')');
+      const etag = res.headers.get('ETag');
+      if (!etag) throw new Error('servidor não retornou ETag');
+      parts.push({ partNumber: part.partNumber, etag });
+      uploaded += chunk.size;
+      state.publishProgress = Math.round((uploaded / blob.size) * 100);
+      state.publishMsg = 'Enviando… ' + state.publishProgress + '%';
+      render();
+    }
+  };
+  await Promise.all(Array.from({ length: workers }, worker));
+  return apiJson('/api/uploads/complete', {
+    method: 'POST',
+    token,
+    body: {
+      videoId: session.videoId,
+      uploadId: session.uploadId,
+      parts,
+      title,
+      description: meta.description || '',
+      tags: [],
+      visibility: meta.visibility || 'PUBLIC',
+    },
+  });
+}
+
+function buildLoginModal() {
+  const modal = el('div', 'modal');
+  modal.addEventListener('click', () => {
+    if (state.loginBusy) return;
+    state.loginOpen = false;
+    state.publishItem = null;
+    render();
+  });
+
+  const box = el('div');
+  box.style.cssText =
+    'background:var(--surface,#1a1a1a);padding:20px;border-radius:14px;max-width:340px;width:88%;' +
+    'display:flex;flex-direction:column;gap:10px;border:1px solid var(--border,#333);';
+  box.addEventListener('click', (e) => e.stopPropagation());
+  box.appendChild(el('h3', '', 'Entrar no VideoPlat'));
+
+  const email = el('input');
+  email.type = 'email';
+  email.placeholder = 'Email';
+  email.value = state.loginEmail;
+  email.style.cssText =
+    'padding:10px;border-radius:8px;border:1px solid var(--border,#333);background:#0f0f0f;color:#fff;';
+  email.addEventListener('input', () => (state.loginEmail = email.value));
+  box.appendChild(email);
+
+  const pass = el('input');
+  pass.type = 'password';
+  pass.placeholder = 'Senha';
+  pass.value = state.loginPassword;
+  pass.style.cssText = email.style.cssText;
+  pass.addEventListener('input', () => (state.loginPassword = pass.value));
+  box.appendChild(pass);
+
+  if (state.loginError) {
+    const e = el('div', '', String(state.loginError).replace(/</g, '&lt;'));
+    e.style.cssText = 'color:#ff6b6b;font-size:13px;';
+    box.appendChild(e);
+  }
+
+  const go = el('button', 'btn', state.loginBusy ? 'Entrando…' : 'Entrar');
+  go.disabled = state.loginBusy;
+  go.style.cssText = 'padding:10px;border-radius:8px;';
+  go.addEventListener('click', () => submitLogin());
+  box.appendChild(go);
+
+  const cancel = el('button', 'btn ghost', 'Cancelar');
+  cancel.addEventListener('click', () => {
+    state.loginOpen = false;
+    state.publishItem = null;
+    render();
+  });
+  box.appendChild(cancel);
+
+  modal.appendChild(box);
+  return modal;
+}
+
+function inputStyle() {
+  return 'padding:10px;border-radius:8px;border:1px solid var(--border,#333);background:#0f0f0f;color:#fff;font:inherit;width:100%;box-sizing:border-box;';
+}
+
+function fieldLabel(text) {
+  const d = el('div', '', text);
+  d.style.cssText = 'font-size:12px;opacity:.7;margin:4px 0 2px;';
+  return d;
+}
+
+function buildPublishModal() {
+  const modal = el('div', 'modal');
+  modal.addEventListener('click', () => {
+    if (state.publishBusy) return;
+    state.publishOpen = false;
+    state.publishTarget = null;
+    state.publishMsg = null;
+    render();
+  });
+  const box = el('div');
+  box.style.cssText =
+    'background:var(--surface,#1a1a1a);padding:20px;border-radius:14px;max-width:380px;width:92%;' +
+    'display:flex;flex-direction:column;gap:8px;border:1px solid var(--border,#333);max-height:88vh;overflow:auto;';
+  box.addEventListener('click', (e) => e.stopPropagation());
+  box.appendChild(el('h3', '', 'Publicar no VideoPlat'));
+
+  box.appendChild(fieldLabel('Título'));
+  const title = el('input');
+  title.type = 'text';
+  title.placeholder = 'Título do vídeo';
+  title.value = state.publishTitle;
+  title.style.cssText = inputStyle();
+  title.addEventListener('input', () => (state.publishTitle = title.value));
+  box.appendChild(title);
+
+  box.appendChild(fieldLabel('Descrição (opcional)'));
+  const desc = el('textarea');
+  desc.placeholder = 'Descrição';
+  desc.value = state.publishDesc;
+  desc.rows = 3;
+  desc.style.cssText = inputStyle() + 'resize:vertical;';
+  desc.addEventListener('input', () => (state.publishDesc = desc.value));
+  box.appendChild(desc);
+
+  box.appendChild(fieldLabel('Visibilidade'));
+  const vis = el('select');
+  vis.style.cssText = inputStyle();
+  [['PUBLIC', 'Público'], ['UNLISTED', 'Não listado'], ['PRIVATE', 'Privado']].forEach(([v, l]) => {
+    const o = el('option', '', l);
+    o.value = v;
+    vis.appendChild(o);
+  });
+  vis.value = state.publishVisibility;
+  vis.addEventListener('change', () => (state.publishVisibility = vis.value));
+  box.appendChild(vis);
+
+  if (state.publishMsg) {
+    box.appendChild(el('div', 'toast ok', state.publishMsg));
+  }
+
+  const go = el('button', 'btn', state.publishBusy ? 'Publicando…' : 'Publicar');
+  go.disabled = !!state.publishBusy;
+  go.style.cssText = 'padding:11px;border-radius:8px;margin-top:6px;';
+  go.addEventListener('click', () => runPublish());
+  box.appendChild(go);
+
+  const cancel = el('button', 'btn ghost', state.publishBusy ? 'Aguarde…' : 'Fechar');
+  cancel.disabled = !!state.publishBusy;
+  cancel.addEventListener('click', () => {
+    state.publishOpen = false;
+    state.publishTarget = null;
+    state.publishMsg = null;
+    render();
+  });
+  box.appendChild(cancel);
+
+  modal.appendChild(box);
+  return modal;
+}
+
+const STATUS_LABEL = { UPLOADING: 'Enviando', PROCESSING: 'Processando', READY: 'Pronto', FAILED: 'Falhou' };
+const VIS_LABEL = { PUBLIC: 'Público', UNLISTED: 'Não listado', PRIVATE: 'Privado' };
+
+function shareVideo(id) {
+  const url = VP_API + '/watch?v=' + id;
+  if (isNative && core().Share) {
+    try {
+      core().Share.share({ title: 'VideoPlat', text: url, url });
+      return;
+    } catch (_) {}
+  }
+  if (navigator.share) {
+    navigator.share({ title: 'VideoPlat', text: url }).catch(() => {});
+    return;
+  }
+  window.prompt('Link do vídeo', url);
+}
+
+async function openMyVideos() {
+  if (!getToken()) {
+    state.myvideosPending = true;
+    openLogin(null);
+    return;
+  }
+  state.myvideosOpen = true;
+  state.myvideosBusy = true;
+  state.myvideosError = null;
+  render();
+  try {
+    const data = await apiJson('/api/videos/mine?limit=48', { token: getToken() });
+    state.myvideosItems = (data && data.items) || [];
+  } catch (e) {
+    state.myvideosError = e && e.message ? e.message : 'Falha ao carregar';
+  }
+  state.myvideosBusy = false;
+  render();
+}
+
+function buildMyVideosModal() {
+  const modal = el('div', 'modal');
+  modal.addEventListener('click', () => {
+    state.myvideosOpen = false;
+    render();
+  });
+  const box = el('div');
+  box.style.cssText =
+    'background:var(--surface,#1a1a1a);padding:16px;border-radius:14px;max-width:440px;width:94%;' +
+    'display:flex;flex-direction:column;gap:6px;border:1px solid var(--border,#333);max-height:84vh;overflow:auto;';
+  box.addEventListener('click', (e) => e.stopPropagation());
+  const head = el('div');
+  head.style.cssText = 'display:flex;justify-content:space-between;align-items:center;';
+  head.appendChild(el('h3', '', 'Meus vídeos'));
+  const close = el('button', 'btn ghost', 'Fechar');
+  close.addEventListener('click', () => {
+    state.myvideosOpen = false;
+    render();
+  });
+  head.appendChild(close);
+  box.appendChild(head);
+
+  const mutedStyle = 'opacity:.7;font-size:13px;padding:8px 0;';
+  if (state.myvideosBusy) {
+    const m = el('div', '', 'Carregando…');
+    m.style.cssText = mutedStyle;
+    box.appendChild(m);
+  } else if (state.myvideosError) {
+    box.appendChild(el('div', '', state.myvideosError));
+  } else if (!state.myvideosItems.length) {
+    const m = el('div', '', 'Você ainda não publicou vídeos.');
+    m.style.cssText = mutedStyle;
+    box.appendChild(m);
+  } else {
+    state.myvideosItems.forEach((it) => {
+      const row = el('div');
+      row.style.cssText = 'display:flex;gap:10px;align-items:center;padding:8px 0;border-top:1px solid var(--border,#333);';
+      const thumb = el('img');
+      if (it.thumbnailUrl) thumb.src = it.thumbnailUrl;
+      thumb.style.cssText = 'width:64px;height:40px;object-fit:cover;border-radius:6px;background:#000;flex:none;';
+      row.appendChild(thumb);
+      const info = el('div');
+      info.style.cssText = 'flex:1;min-width:0;';
+      const t = el('div', '', String(it.title || 'Sem título').replace(/</g, '&lt;'));
+      t.style.cssText = 'font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
+      info.appendChild(t);
+      const sub = el('div', '', (STATUS_LABEL[it.status] || it.status || '—') + ' · ' + (VIS_LABEL[it.visibility] || it.visibility || ''));
+      sub.style.cssText = 'font-size:12px;opacity:.7;';
+      info.appendChild(sub);
+      row.appendChild(info);
+      const share = el('button', 'btn ghost', 'Link');
+      share.style.cssText = 'flex:none;';
+      share.addEventListener('click', () => shareVideo(it.id));
+      row.appendChild(share);
+      box.appendChild(row);
+    });
+  }
+  modal.appendChild(box);
+  return modal;
 }
 
 /* ============================================================
@@ -1093,6 +1656,24 @@ function buildApp() {
   const topbar = el('div', 'topbar');
   const title = el('div', 'title', 'Câmera <span>VideoPlat</span>');
   const tools = el('div', 'toolrow');
+  tools.appendChild(
+    pillBtn(
+      state.accountEmail ? '👤 ' + String(state.accountEmail).split('@')[0] : 'Entrar',
+      () => {
+        if (state.accountEmail) {
+          if (window.confirm('Sair da conta do VideoPlat?')) {
+            clearSession();
+            render();
+          }
+        } else {
+          openLogin(null);
+        }
+      },
+      () => false,
+      () => false,
+    ),
+  );
+  tools.appendChild(pillBtn('📼 Meus vídeos', () => openMyVideos(), () => state.myvideosOpen, () => false));
   tools.appendChild(pillBtn('⚙ Configurações', () => setPanel('settings'), () => state.panel === 'settings', () => false));
   topbar.appendChild(title);
   topbar.appendChild(tools);
@@ -1268,7 +1849,7 @@ function buildApp() {
   }
 
   // galeria
-  if (state.gallery.length > 1) {
+  if (state.gallery.length > 0) {
     const strip = el('div', 'gallery-strip');
     state.gallery.forEach((item) => {
       const b = el('button', 't');
@@ -1282,6 +1863,15 @@ function buildApp() {
 
   // modal de prévia
   if (state.preview) app.appendChild(buildPreviewModal(state.preview));
+
+  // modal de login
+  if (state.loginOpen) app.appendChild(buildLoginModal());
+
+  // modal de publicação
+  if (state.publishOpen) app.appendChild(buildPublishModal());
+
+  // modal de meus vídeos
+  if (state.myvideosOpen) app.appendChild(buildMyVideosModal());
 }
 
 function gridLine(axis, pos) {
@@ -1446,6 +2036,15 @@ function buildPreviewModal(item) {
   modal.appendChild(media);
 
   const actions = el('div', 'actions');
+  if (item.kind === 'video') {
+    const pub = el('button', 'btn', state.publishBusy ? 'Publicando…' : 'Publicar no site');
+    pub.disabled = !!state.publishBusy;
+    pub.addEventListener('click', (e) => {
+      e.stopPropagation();
+      doPublish(item);
+    });
+    actions.appendChild(pub);
+  }
   const share = el('button', 'btn', 'Compartilhar');
   share.addEventListener('click', (e) => {
     e.stopPropagation();
@@ -1509,7 +2108,22 @@ document.addEventListener('DOMContentLoaded', () => {
   // Captura back button do Android: sai do modal/panel antes de fechar o app.
   if (isNative) {
     document.addEventListener('backbutton', () => {
-      if (state.preview) {
+      if (state.loginOpen) {
+        state.loginOpen = false;
+        state.publishItem = null;
+        state.myvideosPending = false;
+        render();
+      } else if (state.publishOpen) {
+        if (!state.publishBusy) {
+          state.publishOpen = false;
+          state.publishTarget = null;
+          state.publishMsg = null;
+          render();
+        }
+      } else if (state.myvideosOpen) {
+        state.myvideosOpen = false;
+        render();
+      } else if (state.preview) {
         state.preview = null;
         state.toast = null;
         render();
@@ -1526,5 +2140,9 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     });
   }
+  try {
+    state.accountEmail = localStorage.getItem(USER_KEY);
+  } catch (_) {}
+  restoreGallery();
   startCamera();
 });

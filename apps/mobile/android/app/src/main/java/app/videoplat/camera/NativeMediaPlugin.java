@@ -80,6 +80,53 @@ public class NativeMediaPlugin extends Plugin {
         }
     }
 
+    /**
+     * Copia um arquivo (gravado no cache pelo CameraPreview) para o armazenamento
+     * interno do app (getFilesDir) para o WebView conseguir lê-lo depois via
+     * @capacitor/filesystem (Directory.Data). Retorna o caminho relativo.
+     */
+    @PluginMethod
+    public void copyToData(PluginCall call) {
+        String srcPath = call.getString("srcPath");
+        String fileName = call.getString("fileName");
+        if (srcPath == null || srcPath.isEmpty()) {
+            call.reject("srcPath obrigatório");
+            return;
+        }
+        if (fileName == null || fileName.isEmpty()) {
+            call.reject("fileName obrigatório");
+            return;
+        }
+        if (srcPath.startsWith("file://")) {
+            srcPath = srcPath.substring("file://".length());
+        }
+        File src = new File(srcPath);
+        if (!src.exists() || !src.isFile()) {
+            call.reject("Arquivo de origem não encontrado: " + srcPath);
+            return;
+        }
+        File dir = new File(getContext().getFilesDir(), "capturas");
+        if (!dir.exists() && !dir.mkdirs()) {
+            call.reject("Não foi possível criar a pasta capturas");
+            return;
+        }
+        File dest = new File(dir, fileName);
+        try (FileInputStream in = new FileInputStream(src);
+             OutputStream out = new FileOutputStream(dest)) {
+            byte[] buf = new byte[64 * 1024];
+            int n;
+            while ((n = in.read(buf)) > 0) {
+                out.write(buf, 0, n);
+            }
+        } catch (IOException ex) {
+            call.reject("Falha ao copiar arquivo: " + ex.getMessage(), ex);
+            return;
+        }
+        JSObject ret = new JSObject();
+        ret.put("path", "capturas/" + fileName);
+        call.resolve(ret);
+    }
+
     private Uri insertIntoMediaStore(Activity activity, File src, String fileName, String mimeType)
             throws IOException {
         boolean isVideo = mimeType != null && mimeType.startsWith("video/");

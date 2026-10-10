@@ -15,8 +15,15 @@ async function bootstrap() {
 
   app.setGlobalPrefix('api', { exclude: ['health'] });
   app.use(helmet());
+  // A WebView do app Capacitor tem origem própria (https://localhost); permitimos
+  // além do site, para o app da câmera conseguir publicar direto na API.
   app.enableCors({
-    origin: config.get('WEB_URL', 'http://localhost:3000'),
+    origin: [
+      config.get('WEB_URL', 'http://localhost:3000'),
+      'https://localhost',
+      'capacitor://localhost',
+      'http://localhost',
+    ],
     credentials: true,
   });
   app.useGlobalPipes(

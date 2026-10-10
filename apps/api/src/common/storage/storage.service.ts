@@ -31,12 +31,18 @@ export interface MultipartSession {
 @Injectable()
 export class StorageService {
   private readonly client: S3Client;
+  private readonly presignClient: S3Client;
   private readonly bucket: string;
   private readonly publicBaseUrl: string;
   readonly sourceBucket: string;
 
   constructor(private readonly config: ConfigService) {
     const endpoint = this.config.get<string>('S3_ENDPOINT');
+    // O browser precisa alcançar o MinIO/S3 por um host público. Quando o
+    // endpoint interno é um nome de rede Docker (ex.: http://minio:9000),
+    // as URLs pré-assinadas usam este endpoint público separado.
+    const publicEndpoint =
+      this.config.get<string>('S3_PUBLIC_ENDPOINT') || endpoint;
     this.bucket = this.config.getOrThrow<string>('S3_BUCKET');
     this.publicBaseUrl = this.config
       .get<string>('PUBLIC_MEDIA_URL')
@@ -45,14 +51,25 @@ export class StorageService {
     // nunca são servidos publicamente.
     this.sourceBucket = `${this.bucket}-source`;
 
+    const credentials = {
+      accessKeyId: this.config.getOrThrow<string>('S3_ACCESS_KEY'),
+      secretAccessKey: this.config.getOrThrow<string>('S3_SECRET_KEY'),
+    };
+    const region = this.config.get<string>('S3_REGION', 'us-east-1');
+    const forcePathStyle =
+      this.config.get('S3_FORCE_PATH_STYLE') === 'true';
+
     this.client = new S3Client({
-      region: this.config.get<string>('S3_REGION', 'us-east-1'),
+      region,
       endpoint,
-      forcePathStyle: this.config.get('S3_FORCE_PATH_STYLE') === 'true',
-      credentials: {
-        accessKeyId: this.config.getOrThrow<string>('S3_ACCESS_KEY'),
-        secretAccessKey: this.config.getOrThrow<string>('S3_SECRET_KEY'),
-      },
+      forcePathStyle,
+      credentials,
+    });
+    this.presignClient = new S3Client({
+      region,
+      endpoint: publicEndpoint,
+      forcePathStyle,
+      credentials,
     });
   }
 
@@ -77,7 +94,7 @@ export class StorageService {
     bucket = this.sourceBucket,
   ): Promise<MultipartSession> {
     const url = await getSignedUrl(
-      this.client,
+      this.presignClient,
       new PutObjectCommand({
         Bucket: bucket,
         Key: objectKey,
@@ -112,7 +129,7 @@ export class StorageService {
       Array.from({ length: partsCount }, (_, index) => {
         const partNumber = index + 1;
         return getSignedUrl(
-          this.client,
+          this.presignClient,
           new UploadPartCommand({
             Bucket: bucket,
             Key: objectKey,

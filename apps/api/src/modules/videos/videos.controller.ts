@@ -23,6 +23,16 @@ import {
 export class VideosController {
   constructor(private readonly videos: VideosService) {}
 
+  @ApiBearerAuth()
+  @Get('mine')
+  listMine(
+    @CurrentUser() user: AuthUser,
+    @Query('limit') limit = '48',
+    @Query('cursor') cursor?: string,
+  ) {
+    return this.videos.listMine(user.id, Number(limit), cursor);
+  }
+
   @Public()
   @Get(':id')
   getById(

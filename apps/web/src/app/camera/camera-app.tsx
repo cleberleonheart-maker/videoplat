@@ -956,7 +956,7 @@ export function CameraApp() {
         </div>
       )}
 
-      {gallery.length > 1 && !preview && (
+      {gallery.length > 0 && !preview && (
         <div className="cam-gallery-strip" style={galleryStripStyle}>
           {gallery.map((item) => (
             <button

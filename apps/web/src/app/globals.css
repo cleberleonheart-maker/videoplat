@@ -177,3 +177,16 @@ button.secondary {
 .cam-mode-tabs button {
   cursor: pointer;
 }
+
+/* Watch: uma coluna no celular, player + lista no desktop. */
+.watch-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 24px;
+}
+
+@media (min-width: 900px) {
+  .watch-grid {
+    grid-template-columns: minmax(0, 1fr) 360px;
+  }
+}

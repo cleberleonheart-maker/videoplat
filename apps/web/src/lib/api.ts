@@ -37,6 +37,8 @@ export interface PlaybackInfo {
 export interface VideoDetail extends VideoCard {
   description: string | null;
   tags: string[];
+  status?: 'UPLOADING' | 'PROCESSING' | 'READY' | 'FAILED';
+  uploaderId?: string;
   viewerReaction: 'LIKE' | 'DISLIKE' | null;
   subscribed: boolean;
   stats: { views: number; likes: number; dislikes?: number; comments: number };

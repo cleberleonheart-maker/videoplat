@@ -1,5 +1,6 @@
 import { apiFetch, PlaybackInfo, VideoCard, VideoDetail, formatViews } from '@/lib/api';
 import { WatchPlayer } from '@/components/watch-player';
+import { VideoOwnerActions } from '@/components/video-owner-actions';
 import { VideoGrid } from '@/components/video-grid';
 
 // O token do cookie httpOnly muda a renderização server-side do player.
@@ -17,13 +18,11 @@ export default async function WatchPage({
   }
 
   let video: VideoDetail;
-  let playback: PlaybackInfo;
+  let playback: PlaybackInfo | null = null;
+  let processingMessage: string | null = null;
 
   try {
-    [video, playback] = await Promise.all([
-      apiFetch<VideoDetail>(`/api/videos/${videoId}`),
-      apiFetch<PlaybackInfo>(`/api/videos/${videoId}/playback`),
-    ]);
+    video = await apiFetch<VideoDetail>(`/api/videos/${videoId}`);
   } catch (error) {
     const message =
       error instanceof Error ? error.message : 'Falha ao carregar o vídeo';
@@ -35,19 +34,70 @@ export default async function WatchPage({
     );
   }
 
+  // Enquanto o worker não termina, ainda não há HLS: mostramos um aviso em
+  // vez do player, mas o dono continua podendo ver e excluir o vídeo.
+  if (video.status === 'READY') {
+    try {
+      playback = await apiFetch<PlaybackInfo>(
+        `/api/videos/${videoId}/playback`,
+      );
+    } catch {
+      processingMessage = 'Não foi possível carregar o player.';
+    }
+  } else {
+    processingMessage =
+      video.status === 'FAILED'
+        ? 'Falha no processamento deste vídeo.'
+        : 'O vídeo está sendo processado. O player aparece aqui em breve.';
+  }
+
   const poster =
     video.thumbnailUrl ??
     video.thumbnails?.map((t) => t.objectKey).slice(0, 1)[0] ??
     null;
 
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 360px', gap: 24 }}>
+    <div className="watch-grid">
       <div>
-        <WatchPlayer
-          videoId={video.id}
-          masterUrl={playback.masterUrl}
-          poster={poster}
-        />
+        {playback && !processingMessage ? (
+          <WatchPlayer
+            videoId={video.id}
+            masterUrl={playback.masterUrl}
+            poster={poster}
+          />
+        ) : (
+          <div
+            style={{
+              position: 'relative',
+              width: '100%',
+              aspectRatio: '16 / 9',
+              background: '#000',
+              borderRadius: 12,
+              overflow: 'hidden',
+              display: 'grid',
+              placeItems: 'center',
+            }}
+          >
+            {poster ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                src={poster}
+                alt=""
+                style={{
+                  position: 'absolute',
+                  inset: 0,
+                  width: '100%',
+                  height: '100%',
+                  objectFit: 'cover',
+                  opacity: 0.35,
+                }}
+              />
+            ) : null}
+            <p style={{ position: 'relative', color: '#eee', padding: 16 }}>
+              {processingMessage}
+            </p>
+          </div>
+        )}
 
         <h1 style={{ margin: '16px 0 8px' }}>{video.title}</h1>
 
@@ -72,6 +122,7 @@ export default async function WatchPage({
           <button className="secondary" style={{ marginLeft: 'auto' }}>
             {video.subscribed ? 'Inscrito' : 'Inscrever-se'}
           </button>
+          <VideoOwnerActions videoId={video.id} uploaderId={video.uploaderId} />
         </div>
 
         {video.description && (

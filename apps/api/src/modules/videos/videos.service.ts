@@ -134,6 +134,21 @@ export class VideosService {
     return this.decorate(video);
   }
 
+  async listMine(uploaderId: string, limit = 48, cursor?: string) {
+    const items = await this.prisma.video.findMany({
+      where: { uploaderId },
+      select: cardSelect,
+      orderBy: { createdAt: 'desc' },
+      take: limit + 1,
+      ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
+    });
+
+    return this.paginate(
+      items.map((item) => this.decorate(item)),
+      limit,
+    );
+  }
+
   async listByChannel(channelHandle: string, limit = 24, cursor?: string) {
     const channel = await this.prisma.channel.findUnique({
       where: { handle: channelHandle },
