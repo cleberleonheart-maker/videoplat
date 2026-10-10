@@ -20,7 +20,8 @@
     "db:studio": "npm run prisma:studio --workspace @videoplat/api",
     "apk": "npm run apk --prefix apps/mobile",
     "apk:release": "npm run apk:release --prefix apps/mobile",
-    "apk:info": "aapt dump badging apps/mobile/android/app/build/outputs/apk/debug/app-debug.apk"
+    "apk:info": "aapt dump badging apps/mobile/android/app/build/outputs/apk/debug/app-debug.apk",
+    "deploy": "bash scripts/deploy.sh"
   },
   "devDependencies": {
     "concurrently": "^9.1.2",
