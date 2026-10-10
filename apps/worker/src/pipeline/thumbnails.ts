@@ -15,6 +15,9 @@ export interface ThumbnailResult {
  * Gera três thumbnails em tempos espaçados do vídeo e faz upload de cada uma
  * como JPEG individual. Frames são extraídos com -ss antes de -i para o
  * FFmpeg pular direto ao keyframe mais próximo, sem decodificar o início.
+ *
+ * Se coverTimeSec for informado, a primeira amostra (a capa de verdade)
+ * passa a ser exatamente esse frame.
  */
 export async function generateThumbnails(
   inputFile: string,
@@ -22,8 +25,12 @@ export async function generateThumbnails(
   durationSec: number,
   s3: S3Config,
   prefix: string,
+  coverTimeSec?: number,
 ): Promise<ThumbnailResult[]> {
   const times = pickSampleTimes(durationSec);
+  if (coverTimeSec != null && Number.isFinite(coverTimeSec)) {
+    times[0] = clamp(coverTimeSec, 0, Math.max(0, durationSec));
+  }
   const results: ThumbnailResult[] = [];
 
   for (const spec of THUMBNAIL_SPECS) {
@@ -88,4 +95,8 @@ function pickSampleTimes(durationSec: number): number[] {
     const ratio = (i + 1) / (count + 1);
     return Number((durationSec * ratio).toFixed(2));
   });
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(Math.max(value, min), max);
 }

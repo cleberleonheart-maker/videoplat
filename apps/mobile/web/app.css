@@ -168,6 +168,38 @@ button:disabled {
   transform: scaleX(-1);
 }
 
+/* retículo do foco por toque */
+.focus-reticle {
+  position: absolute;
+  width: 62px;
+  height: 62px;
+  border: 2px solid var(--accent);
+  border-radius: 12px;
+  transform: translate(-50%, -50%);
+  box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.08), 0 0 10px rgba(0, 0, 0, 0.6);
+  pointer-events: none;
+}
+.focus-reticle.locked {
+  border-color: #ffd43b;
+}
+.focus-reticle.locked::after {
+  content: '🔒';
+  position: absolute;
+  left: 50%;
+  top: -26px;
+  transform: translateX(-50%);
+  font-size: 16px;
+}
+
+/* seletor de capa no modal de publicação */
+.cover-thumb {
+  width: 100%;
+  max-width: 170px;
+  align-self: center;
+  border-radius: 8px;
+  background: #000;
+}
+
 /* grade de terços */
 .grid-line {
   position: absolute;

@@ -9,11 +9,13 @@ import {
   cleanup,
   download,
   probe,
+  probeLocalFile,
   putText,
   safeSegment,
   S3Config,
   TranscodeResult,
   transcodeRendition,
+  trimSource,
   uploadDir,
 } from '../pipeline/ffmpeg';
 import { generateThumbnails } from '../pipeline/thumbnails';
@@ -23,6 +25,11 @@ import { QUEUE_NAMES, TranscodeJobData, VIDEO_JOBS } from './constants';
 const logger = new Logger('TranscodeProcessor');
 
 const segmentSeconds = Number(process.env.HLS_SEGMENT_SECONDS ?? 6);
+
+function clampSec(value: number | undefined, min: number, max: number): number {
+  const n = Number.isFinite(value) ? Number(value) : min;
+  return Math.min(Math.max(n, min), max);
+}
 
 export function createS3Config(): S3Config {
   const bucket = process.env.S3_BUCKET!;
@@ -71,7 +78,28 @@ export async function processTranscode(
 
   try {
     logger.log(`[${videoId}] probing source`);
-    const meta = await probe(sourceKey, sourceDir, s3);
+    let meta = await probe(sourceKey, sourceDir, s3);
+
+    // Corte escolhido no app: recorta o fonte primeiro e reprocessa o meta
+    // (duração, resolução) já em cima do arquivo recortado.
+    const hasTrim = data.trimStartSec != null || data.trimEndSec != null;
+    if (hasTrim) {
+      const dur = meta.durationSec;
+      const start = clampSec(data.trimStartSec, 0, Math.max(0, dur));
+      const end = clampSec(
+        data.trimEndSec,
+        Math.min(start + 0.1, Math.max(0, dur)),
+        Math.max(0, dur),
+      );
+      if (end - start >= 0.1) {
+        logger.log(`[${videoId}] trimming ${start}s → ${end}s`);
+        const trimmed = await trimSource(meta.inputPath, workDir, {
+          startSec: start,
+          endSec: end,
+        });
+        meta = await probeLocalFile(trimmed);
+      }
+    }
 
     // Fontes sem áudio ou muito curtas quebram o filter_complex do master.
     const specs = renditionsFor(meta.height, meta.isVertical);
@@ -127,6 +155,7 @@ export async function processTranscode(
       meta.durationSec,
       s3,
       prefix,
+      data.thumbnailTimeSec,
     );
 
     await prisma.$transaction(async (tx: Prisma.TransactionClient) => {

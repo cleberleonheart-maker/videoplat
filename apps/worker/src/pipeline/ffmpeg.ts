@@ -54,7 +54,11 @@ export async function probe(
   s3: S3Config,
 ): Promise<ProbeResult> {
   const inputPath = await download(s3, s3.sourceBucket, sourceKey, localPath);
+  return probeLocalFile(inputPath);
+}
 
+/** Mesma análise do probe, mas para um arquivo já em disco (ex.: recorte). */
+export async function probeLocalFile(inputPath: string): Promise<ProbeResult> {
   const raw = await new Promise<string>((resolve, reject) => {
     const proc = spawn(
       process.env.FFPROBE_PATH ?? 'ffprobe',
@@ -102,6 +106,35 @@ export async function probe(
     hasAudio: parsed.streams?.some((s) => s.codec_type === 'audio') ?? false,
     isVertical: height > width,
   };
+}
+
+export interface TrimSpec {
+  startSec: number;
+  endSec: number;
+}
+
+/**
+ * Aplica o corte no fonte de forma precisa (re-encoding) e devolve o caminho
+ * do arquivo recortado. As rendições e thumbnails passam a usar esse arquivo.
+ */
+export async function trimSource(
+  inputFile: string,
+  workDir: string,
+  trim: TrimSpec,
+): Promise<string> {
+  const out = join(workDir, 'trimmed.mp4');
+  await run([
+    '-y',
+    '-i', inputFile,
+    '-ss', String(trim.startSec),
+    '-to', String(trim.endSec),
+    '-c:v', 'libx264',
+    '-preset', 'fast',
+    '-c:a', 'aac',
+    '-pix_fmt', 'yuv420p',
+    out,
+  ]);
+  return out;
 }
 
 /** Baixa a fonte para disco: o FFmpeg precisa de um caminho seekable. */

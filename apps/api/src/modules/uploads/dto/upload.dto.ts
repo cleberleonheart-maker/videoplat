@@ -3,6 +3,7 @@ import {
   IsArray,
   IsEnum,
   IsInt,
+  IsNumber,
   IsOptional,
   IsString,
   Length,
@@ -80,4 +81,21 @@ export class CompleteUploadDto {
   @IsOptional()
   @IsEnum(Visibility)
   visibility?: Visibility;
+
+  /** Corte do vídeo (segundos), aplicado no worker antes de transcodificar. */
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  trimStartSec?: number;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  trimEndSec?: number;
+
+  /** Frame (segundos) escolhido para virar a capa do vídeo. */
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  thumbnailTimeSec?: number;
 }

@@ -134,6 +134,13 @@ export class UploadsService {
     const job: TranscodeJobData = {
       videoId: video.id,
       sourceKey: video.sourceKey,
+      ...(typeof dto.trimStartSec === 'number'
+        ? { trimStartSec: dto.trimStartSec }
+        : {}),
+      ...(typeof dto.trimEndSec === 'number' ? { trimEndSec: dto.trimEndSec } : {}),
+      ...(typeof dto.thumbnailTimeSec === 'number'
+        ? { thumbnailTimeSec: dto.thumbnailTimeSec }
+        : {}),
     };
     // jobId não pode conter ":" — é o separador de namespace do Redis.
     await this.videoQueue.add(VIDEO_JOBS.TRANSCODE, job, {

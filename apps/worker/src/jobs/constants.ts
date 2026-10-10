@@ -9,4 +9,9 @@ export const VIDEO_JOBS = {
 export interface TranscodeJobData {
   videoId: string;
   sourceKey: string;
+  /** Corte, em segundos, antes da transcodificação (opcional). */
+  trimStartSec?: number;
+  trimEndSec?: number;
+  /** Tempo (s) do frame escolhido como capa (opcional). */
+  thumbnailTimeSec?: number;
 }

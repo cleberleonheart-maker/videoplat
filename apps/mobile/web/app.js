@@ -119,6 +119,13 @@ const state = {
   publishTitle: '',
   publishDesc: '',
   publishVisibility: 'PUBLIC',
+  publishTrimStart: 0,
+  publishTrimEnd: 0, // 0 = fim do vídeo
+  publishCoverTime: null, // frame escolhido como capa (s)
+  publishDuration: 0,
+  // foco/exposição
+  focusAt: null, // { x, y } normalizado (0..1) do retículo
+  exposureLocked: false,
   // meus vídeos
   myvideosOpen: false,
   myvideosBusy: false,
@@ -158,6 +165,7 @@ const refs = {
   recordStart: 0,
   recordNative: 0,
   elapsedBase: 0,
+  focusT: 0,
 };
 
 /* ---------------- helpers ---------------- */
@@ -526,6 +534,91 @@ async function toggleTorch() {
   }
 }
 
+/* ---------------- foco/exposição por toque ---------------- */
+
+function cameraTrack() {
+  if (state.nativeMode || !state.stream) return null;
+  const track = state.stream.getVideoTracks()[0];
+  return track && typeof track.applyConstraints === 'function' ? track : null;
+}
+
+function focusAt(xFrac, yFrac) {
+  const track = cameraTrack();
+  if (!track) return;
+  const x = Math.min(Math.max(xFrac, 0), 1);
+  const y = Math.min(Math.max(yFrac, 0), 1);
+  state.focusAt = { x, y };
+  state.exposureLocked = false;
+  if (refs.focusT) clearTimeout(refs.focusT);
+  refs.focusT = setTimeout(() => {
+    state.focusAt = null;
+    render();
+  }, 1600);
+  render();
+  track
+    .applyConstraints({
+      advanced: [
+        { pointsOfInterest: [{ x, y }] },
+        { focusMode: 'continuous' },
+      ],
+    })
+    .catch(() => {});
+}
+
+function lockExposure() {
+  const track = cameraTrack();
+  if (!track) return;
+  state.exposureLocked = true;
+  if (refs.focusT) clearTimeout(refs.focusT);
+  refs.focusT = setTimeout(() => {
+    state.focusAt = null;
+    state.exposureLocked = false;
+    render();
+  }, 2200);
+  state.toast = { ok: true, msg: 'Foco e exposição travados' };
+  render();
+  track
+    .applyConstraints({ advanced: [{ focusMode: 'manual' }, { exposureMode: 'manual' }] })
+    .catch(() => {});
+}
+
+function bindTapToFocus(stage) {
+  let holdTimer = 0;
+  let sx = 0;
+  let sy = 0;
+  let held = false;
+  const clearHold = () => {
+    if (holdTimer) clearTimeout(holdTimer);
+    holdTimer = 0;
+  };
+  const isChrome = (t) =>
+    !!(t && t.closest && t.closest('.hud,.rec-badge,.zoombar,.pill,.center-overlay'));
+  stage.addEventListener('pointerdown', (e) => {
+    if (isChrome(e.target) || !state.stream || state.rec !== 'inactive') return;
+    sx = e.clientX;
+    sy = e.clientY;
+    held = false;
+    clearHold();
+    holdTimer = setTimeout(() => {
+      held = true;
+      lockExposure();
+    }, 600);
+  });
+  stage.addEventListener('pointermove', (e) => {
+    if (holdTimer && (Math.abs(e.clientX - sx) > 12 || Math.abs(e.clientY - sy) > 12)) clearHold();
+  });
+  stage.addEventListener('pointercancel', clearHold);
+  stage.addEventListener('pointerup', (e) => {
+    const wasHold = held;
+    clearHold();
+    if (wasHold || isChrome(e.target)) return;
+    if (Math.abs(e.clientX - sx) > 12 || Math.abs(e.clientY - sy) > 12) return;
+    const r = stage.getBoundingClientRect();
+    if (!r.width || !r.height) return;
+    focusAt((e.clientX - r.left) / r.width, (e.clientY - r.top) / r.height);
+  });
+}
+
 function cropRect(vw, vh) {
   const a = activeAspect();
   const ratio = a.ratio != null ? a.ratio : state.freeRatio != null ? state.freeRatio : vw / vh;
@@ -855,12 +948,28 @@ function runCountdown(secs, onDone) {
 
 /* ---------------- vídeo ---------------- */
 
-function startRecording() {
+async function startRecording() {
   const canvas = v.canvas;
   if (!canvas || !state.stream) return;
   const mime = pickMime();
   if (!mime) {
     state.toast = { ok: false, msg: 'Gravação não suportada neste WebView' };
+    return;
+  }
+
+  // Muitos WebViews do Android só gravam WebM. Como MP4 é o formato da
+  // galeria/publicação, quando o WebView não oferece MP4 trocamos para o
+  // gravador nativo (CameraPreview), que sempre produz MP4.
+  if (mime.indexOf('mp4') < 0 && camPrev() && state.audioOn) {
+    const ok = await startNativePreview();
+    if (ok) {
+      state.toast = { ok: true, msg: 'Gravando em MP4…' };
+      render();
+      startNativeRecord();
+    } else {
+      state.toast = { ok: false, msg: 'Não foi possível gravar em MP4' };
+      render();
+    }
     return;
   }
 
@@ -1321,6 +1430,10 @@ function openPublish(item) {
   state.publishTitle = 'Câmera ' + stamp();
   state.publishDesc = '';
   state.publishVisibility = 'PUBLIC';
+  state.publishTrimStart = 0;
+  state.publishTrimEnd = 0;
+  state.publishCoverTime = null;
+  state.publishDuration = 0;
   state.publishMsg = null;
   state.publishProgress = 0;
   render();
@@ -1351,11 +1464,21 @@ async function runPublish() {
     if (!blob) throw new Error('arquivo do vídeo indisponível');
     const rawType = item.mime && item.mime.indexOf('video/') === 0 ? item.mime : 'video/mp4';
     const contentType = rawType.split(';')[0].trim();
-    const out = await uploadVideoBlob(blob, contentType, {
+    const meta = {
       title: state.publishTitle.trim() || 'Câmera ' + stamp(),
       description: state.publishDesc.trim(),
       visibility: state.publishVisibility,
-    });
+    };
+    if (state.publishCoverTime != null) meta.thumbnailTimeSec = state.publishCoverTime;
+    if (state.publishDuration > 0) {
+      const start = Number(state.publishTrimStart) || 0;
+      const end = Number(state.publishTrimEnd) || state.publishDuration;
+      if (start > 0 || end < state.publishDuration - 0.15) {
+        meta.trimStartSec = start;
+        meta.trimEndSec = end;
+      }
+    }
+    const out = await uploadVideoBlob(blob, contentType, meta);
     state.publishMsg = 'Publicado! Processando no site…';
     state.publishBusy = false;
     render();
@@ -1416,6 +1539,11 @@ async function uploadVideoBlob(blob, contentType, meta = {}) {
       description: meta.description || '',
       tags: [],
       visibility: meta.visibility || 'PUBLIC',
+      ...(meta.trimStartSec != null ? { trimStartSec: meta.trimStartSec } : {}),
+      ...(meta.trimEndSec != null ? { trimEndSec: meta.trimEndSec } : {}),
+      ...(meta.thumbnailTimeSec != null
+        ? { thumbnailTimeSec: meta.thumbnailTimeSec }
+        : {}),
     },
   });
 }
@@ -1487,6 +1615,151 @@ function fieldLabel(text) {
   return d;
 }
 
+function buildTrimEditor() {
+  const item = state.publishTarget;
+  const wrap = el('div');
+  wrap.style.cssText = 'display:flex;flex-direction:column;gap:8px;margin-bottom:4px;';
+
+  const pv = el('video');
+  pv.src = item.url;
+  pv.muted = true;
+  pv.controls = true;
+  pv.setAttribute('playsinline', '');
+  pv.preload = 'metadata';
+  pv.style.cssText = 'width:100%;max-height:190px;background:#000;border-radius:10px;';
+  wrap.appendChild(pv);
+
+  const cover = el('canvas');
+  cover.width = 320;
+  cover.height = 180;
+  cover.className = 'cover-thumb';
+  wrap.appendChild(cover);
+
+  const hint = el('div', '', 'Carregando vídeo…');
+  hint.style.cssText = 'font-size:11px;opacity:.6;text-align:center;';
+  wrap.appendChild(hint);
+
+  const mkRow = (label) => {
+    const row = el('div');
+    row.style.cssText = 'display:none;flex-direction:column;gap:2px;';
+    const head = el('div');
+    head.style.cssText =
+      'display:flex;justify-content:space-between;font-size:12px;opacity:.75;';
+    const name = el('span', '', label);
+    const val = el('span', '', '0:00');
+    head.appendChild(name);
+    head.appendChild(val);
+    const input = el('input');
+    input.type = 'range';
+    input.min = '0';
+    input.max = '100';
+    input.step = '0.1';
+    input.value = '0';
+    input.disabled = true;
+    input.style.cssText = 'width:100%;';
+    row.appendChild(head);
+    row.appendChild(input);
+    wrap.appendChild(row);
+    return { row, input, val };
+  };
+
+  const rowStart = mkRow('Início do corte');
+  const rowEnd = mkRow('Fim do corte');
+  const rowCover = mkRow('Frame da capa');
+
+  const state0 = {
+    duration: 0,
+    ready: false,
+  };
+
+  const fmt = (s) => fmtTime(Math.max(0, Number(s) || 0));
+
+  const drawCover = () => {
+    const vw = pv.videoWidth;
+    const vh = pv.videoHeight;
+    if (!vw || !vh) return;
+    const cw = cover.width;
+    const ch = cover.height;
+    const scale = Math.max(cw / vw, ch / vh);
+    const dw = vw * scale;
+    const dh = vh * scale;
+    const ctx = cover.getContext('2d');
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0, 0, cw, ch);
+    ctx.drawImage(pv, (cw - dw) / 2, (ch - dh) / 2, dw, dh);
+  };
+
+  const seekTo = (sec) => {
+    if (!state0.ready) return;
+    const d = Math.max(0, state0.duration - 0.05);
+    try {
+      pv.currentTime = Math.min(Math.max(Number(sec) || 0, 0), d);
+    } catch (_) {}
+  };
+
+  pv.addEventListener('loadedmetadata', () => {
+    const d = Number(pv.duration) || 0;
+    if (!d || !Number.isFinite(d)) return;
+    state0.duration = d;
+    state0.ready = true;
+    state.publishDuration = d;
+    [rowStart, rowEnd, rowCover].forEach((r) => {
+      r.row.style.display = 'flex';
+      r.input.disabled = false;
+      r.input.max = String(d);
+    });
+    rowStart.input.value = '0';
+    rowEnd.input.value = String(d);
+    state.publishTrimStart = 0;
+    state.publishTrimEnd = d;
+    const coverDefault = Math.min(d * 0.3, d);
+    rowCover.input.value = String(coverDefault);
+    rowStart.val.textContent = fmt(0);
+    rowEnd.val.textContent = fmt(d);
+    rowCover.val.textContent = fmt(coverDefault);
+    hint.textContent = 'Arraste para cortar e escolher a capa';
+    seekTo(coverDefault);
+  });
+
+  pv.addEventListener('seeked', drawCover);
+  pv.addEventListener('error', () => {
+    hint.textContent = 'Pré-visualização indisponível neste arquivo.';
+  });
+
+  rowStart.input.addEventListener('input', () => {
+    let s = Number(rowStart.input.value) || 0;
+    const e = Number(rowEnd.input.value) || state0.duration;
+    if (s > e - 0.3) {
+      s = Math.max(0, e - 0.3);
+      rowStart.input.value = String(s);
+    }
+    state.publishTrimStart = s;
+    rowStart.val.textContent = fmt(s);
+    seekTo(s);
+  });
+
+  rowEnd.input.addEventListener('input', () => {
+    let e = Number(rowEnd.input.value) || state0.duration;
+    const s = Number(rowStart.input.value) || 0;
+    if (e < s + 0.3) {
+      e = Math.min(state0.duration, s + 0.3);
+      rowEnd.input.value = String(e);
+    }
+    state.publishTrimEnd = e;
+    rowEnd.val.textContent = fmt(e);
+    seekTo(e);
+  });
+
+  rowCover.input.addEventListener('input', () => {
+    const t = Number(rowCover.input.value) || 0;
+    state.publishCoverTime = t;
+    rowCover.val.textContent = fmt(t);
+    seekTo(t);
+  });
+
+  return wrap;
+}
+
 function buildPublishModal() {
   const modal = el('div', 'modal');
   modal.addEventListener('click', () => {
@@ -1532,6 +1805,11 @@ function buildPublishModal() {
   vis.value = state.publishVisibility;
   vis.addEventListener('change', () => (state.publishVisibility = vis.value));
   box.appendChild(vis);
+
+  if (state.publishTarget && state.publishTarget.kind === 'video') {
+    box.appendChild(fieldLabel('Corte e capa (opcional)'));
+    box.appendChild(buildTrimEditor());
+  }
 
   if (state.publishMsg) {
     box.appendChild(el('div', 'toast ok', state.publishMsg));
@@ -1868,6 +2146,17 @@ function buildApp() {
     stage.appendChild(gridLine('v', '66.66%'));
     stage.appendChild(gridLine('h', '33.33%'));
     stage.appendChild(gridLine('h', '66.66%'));
+  }
+
+  // foco/exposição por toque (apenas no preview via WebView)
+  if (!state.nativeMode) {
+    bindTapToFocus(stage);
+    if (state.focusAt) {
+      const ret = el('div', 'focus-reticle' + (state.exposureLocked ? ' locked' : ''));
+      ret.style.left = (state.focusAt.x * 100).toFixed(2) + '%';
+      ret.style.top = (state.focusAt.y * 100).toFixed(2) + '%';
+      stage.appendChild(ret);
+    }
   }
 
   // hud superior (rec / pausar)
