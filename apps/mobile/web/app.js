@@ -1452,8 +1452,27 @@ async function playableVideoUrl(item) {
   return item.url;
 }
 
+/**
+ * Lê (uma vez) a rotação do metadado do vídeo e as dimensões brutas. A WebView
+ * do Android nem sempre aplica essa rotação ao reproduzir, então usamos o valor
+ * para girar o vídeo/miniatura dentro do app.
+ */
+async function videoRotation(item) {
+  if (!isNative || !item || !item.persistedPath) return 0;
+  if (item._rotation != null) return item._rotation;
+  try {
+    const res = await core().NativeMedia.getVideoRotation({ path: item.persistedPath });
+    item._rotation = res && res.rotation ? Number(res.rotation) : 0;
+    item._rawW = res && res.width ? Number(res.width) : 0;
+    item._rawH = res && res.height ? Number(res.height) : 0;
+  } catch (_) {
+    item._rotation = 0;
+  }
+  return item._rotation;
+}
+
 /** Extrai um frame do vídeo como data URL (thumbnail), sem travar a UI. */
-function captureVideoPoster(url) {
+function captureVideoPoster(url, rotation, rawW, rawH) {
   return new Promise((resolve) => {
     const vid = document.createElement('video');
     vid.muted = true;
@@ -1472,12 +1491,26 @@ function captureVideoPoster(url) {
         const vw = vid.videoWidth;
         const vh = vid.videoHeight;
         if (!vw || !vh) return finish(null);
+        let rot = (((rotation || 0) % 360) + 360) % 360;
+        // Se a WebView já aplicou a rotação (90/270), as dimensões do elemento
+        // ficam trocadas em relação às dimensões brutas — então não giramos de novo.
+        if ((rot === 90 || rot === 270) && rawW && rawH) {
+          if (Math.abs(vw / vh - rawW / rawH) > 0.02) rot = 0;
+        }
+        const swap = rot === 90 || rot === 270;
+        const dispW = swap ? vh : vw;
+        const dispH = swap ? vw : vh;
         const cw = 240;
-        const ch = Math.max(1, Math.round(cw * (vh / vw)));
+        const ch = Math.max(1, Math.round(cw * (dispH / dispW)));
         const c = document.createElement('canvas');
         c.width = cw;
         c.height = ch;
-        c.getContext('2d').drawImage(vid, 0, 0, cw, ch);
+        const cx = c.getContext('2d');
+        cx.translate(cw / 2, ch / 2);
+        cx.rotate((rot * Math.PI) / 180);
+        const dw = swap ? ch : cw;
+        const dh = swap ? cw : ch;
+        cx.drawImage(vid, -dw / 2, -dh / 2, dw, dh);
         finish(c.toDataURL('image/jpeg', 0.6));
       } catch (_) {
         finish(null);
@@ -1508,8 +1541,9 @@ function ensureVideoPoster(item) {
       // persistindo o arquivo quando necessário.
       const blob = await ensureBlob(item);
       if (!blob) return null;
+      const rotation = await videoRotation(item);
       url = URL.createObjectURL(blob);
-      const poster = await captureVideoPoster(url);
+      const poster = await captureVideoPoster(url, rotation, item._rawW, item._rawH);
       if (poster) item.poster = poster;
       return poster;
     } catch (_) {
@@ -2886,8 +2920,29 @@ function buildPreviewModal(item) {
           // A URL de uma gravação nativa pode ser content://, que a WebView não
           // reproduz. Resolvemos a URL do arquivo persistido antes de carregar.
           playableVideoUrl(item)
-            .then((u) => {
-              if (u) video.src = u;
+            .then(async (u) => {
+              if (!u) return;
+              const rotation = await videoRotation(item);
+              video.src = u;
+              if (!rotation) return;
+              const apply = () => {
+                let deg = rotation;
+                // Se a WebView já aplicou 90/270, as dimensões exibidas ficam
+                // trocadas em relação às brutas — então não giramos de novo.
+                if (
+                  (deg === 90 || deg === 270) &&
+                  item._rawW &&
+                  item._rawH &&
+                  video.videoWidth &&
+                  video.videoHeight &&
+                  Math.abs(video.videoWidth / video.videoHeight - item._rawW / item._rawH) > 0.02
+                ) {
+                  deg = 0;
+                }
+                if (deg) video.style.transform = `rotate(${deg}deg)`;
+              };
+              if (video.readyState >= 1) apply();
+              else video.addEventListener('loadedmetadata', apply, { once: true });
             })
             .catch(() => {});
           return video;

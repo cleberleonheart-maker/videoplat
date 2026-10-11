@@ -3,6 +3,7 @@ package app.videoplat.camera;
 import android.app.Activity;
 import android.content.ContentValues;
 import android.content.Intent;
+import android.media.MediaMetadataRetriever;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Environment;
@@ -126,6 +127,51 @@ public class NativeMediaPlugin extends Plugin {
         JSObject ret = new JSObject();
         ret.put("path", "capturas/" + fileName);
         call.resolve(ret);
+    }
+
+    /**
+     * Lê a rotação (metadado do MP4) e as dimensões brutas de um vídeo. A WebView
+     * do Android nem sempre aplica essa rotação ao reproduzir, então o app usa o
+     * valor para girar o vídeo e a miniatura corretamente.
+     */
+    @PluginMethod
+    public void getVideoRotation(PluginCall call) {
+        String path = call.getString("path");
+        if (path == null || path.isEmpty()) {
+            call.reject("path obrigatório");
+            return;
+        }
+        File file;
+        if (path.startsWith("file://")) {
+            file = new File(path.substring("file://".length()));
+        } else if (path.startsWith("/")) {
+            file = new File(path);
+        } else {
+            file = new File(getContext().getFilesDir(), path.replaceFirst("^/+", ""));
+        }
+        if (!file.exists() || !file.isFile()) {
+            call.reject("Arquivo não encontrado: " + file.getAbsolutePath());
+            return;
+        }
+        MediaMetadataRetriever retriever = new MediaMetadataRetriever();
+        try {
+            retriever.setDataSource(file.getAbsolutePath());
+            String rotation = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION);
+            String width = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH);
+            String height = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT);
+            JSObject ret = new JSObject();
+            ret.put("rotation", rotation == null ? 0 : Integer.parseInt(rotation));
+            ret.put("width", width == null ? 0 : Integer.parseInt(width));
+            ret.put("height", height == null ? 0 : Integer.parseInt(height));
+            call.resolve(ret);
+        } catch (Exception ex) {
+            call.reject("Falha ao ler rotação: " + ex.getMessage(), ex);
+        } finally {
+            try {
+                retriever.release();
+            } catch (Exception ignored) {
+            }
+        }
     }
 
     /**
