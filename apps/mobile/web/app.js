@@ -1323,7 +1323,9 @@ function setPanel(p) {
 
 async function persistToCache(item, fileName) {
   const fs = core().Filesystem;
-  const base64 = await toBase64(item.blob);
+  const blob = await ensureBlob(item);
+  if (!blob) throw new Error('arquivo indisponível');
+  const base64 = await toBase64(blob);
   await fs.writeFile({ path: `capturas/${fileName}`, data: base64, directory: 'CACHE', recursive: true });
   return fileName;
 }
@@ -1426,6 +1428,30 @@ function fileSrc(uri) {
   return uri;
 }
 
+/**
+ * Reaponta `item.url` para uma URL que a WebView consegue reproduzir.
+ * Gravações da câmera nativa começam com uma URL `content://` (MediaStore),
+ * que a WebView não carrega; depois de persistido em DATA, usamos o file://
+ * do arquivo (convertido por fileSrc).
+ */
+async function refreshItemPlayableUrl(item) {
+  if (!isNative || !item || !item.persistedPath) return;
+  try {
+    const res = await core().Filesystem.getUri({ path: item.persistedPath, directory: 'DATA' });
+    const uri = (res && res.uri) || '';
+    if (uri) item.url = fileSrc(uri);
+  } catch (_) {}
+}
+
+/** Resolve uma URL reproduzível na WebView para um vídeo da galeria. */
+async function playableVideoUrl(item) {
+  try {
+    await ensureBlob(item);
+  } catch (_) {}
+  await refreshItemPlayableUrl(item);
+  return item.url;
+}
+
 /** Extrai um frame do vídeo como data URL (thumbnail), sem travar a UI. */
 function captureVideoPoster(url) {
   return new Promise((resolve) => {
@@ -1477,26 +1503,19 @@ function ensureVideoPoster(item) {
   if (item._posterPromise) return item._posterPromise;
   const p = (async () => {
     let url = null;
-    let revoke = false;
     try {
-      if (item.blob) {
-        url = URL.createObjectURL(item.blob);
-        revoke = true;
-      } else if (item.persistedPath) {
-        const b64 = await readDataFile(item.persistedPath);
-        url = URL.createObjectURL(base64ToBlob(b64, item.mime));
-        revoke = true;
-      } else {
-        // Ainda não persistido (ex.: gravação nativa): tenta de novo depois.
-        return null;
-      }
+      // ensureBlob cobre blob (web), persistido e gravação nativa (srcPath),
+      // persistindo o arquivo quando necessário.
+      const blob = await ensureBlob(item);
+      if (!blob) return null;
+      url = URL.createObjectURL(blob);
       const poster = await captureVideoPoster(url);
       if (poster) item.poster = poster;
       return poster;
     } catch (_) {
       return null;
     } finally {
-      if (revoke && url) URL.revokeObjectURL(url);
+      if (url) URL.revokeObjectURL(url);
     }
   })();
   item._posterPromise = p;
@@ -1514,24 +1533,29 @@ function ensureVideoPoster(item) {
  * possível, trocamos por um poster gerado em canvas.
  */
 function appendThumb(btn, item) {
-  if (item.kind !== 'video' || item.poster) {
+  if (item.kind !== 'video') {
     const img = el('img');
-    img.src = item.kind === 'video' ? item.poster : item.url;
+    img.src = item.url;
     btn.appendChild(img);
     return;
   }
-  const vid = el('video');
-  vid.muted = true;
-  vid.setAttribute('playsinline', '');
-  vid.setAttribute('preload', 'metadata');
-  vid.src = item.url;
-  btn.appendChild(vid);
+  if (item.poster) {
+    const img = el('img');
+    img.src = item.poster;
+    btn.appendChild(img);
+    return;
+  }
+  // Sem poster ainda: nunca aponte o <video> para uma URL content:// (a
+  // WebView não reproduz e exibe o "quadrado quebrado"). Mostra um fundo
+  // escuro até extrairmos um frame do vídeo persistido.
+  const ph = el('div', 'thumb-fallback');
+  btn.appendChild(ph);
   ensureVideoPoster(item)
     .then((poster) => {
-      if (!poster || !btn.contains(vid)) return;
+      if (!poster || !btn.contains(ph)) return;
       const img = el('img');
       img.src = poster;
-      btn.replaceChild(img, vid);
+      btn.replaceChild(img, ph);
     })
     .catch(() => {});
 }
@@ -1555,29 +1579,38 @@ function updateManifest() {
   } catch (_) {}
 }
 
-async function persistItem(item) {
-  if (!isNative || !item || item.persistedPath) return;
+function persistItem(item) {
+  if (!isNative || !item) return Promise.resolve();
+  if (item.persistedPath) return Promise.resolve();
+  if (item._persistPromise) return item._persistPromise;
   const fileName = `${item.id}.${galleryExt(item)}`;
-  try {
-    if (item.blob) {
-      const base64 = await toBase64(item.blob);
-      await core().Filesystem.writeFile({
-        path: `capturas/${fileName}`,
-        data: base64,
-        directory: 'DATA',
-        recursive: true,
-      });
-    } else if (item.srcPath) {
-      await core().NativeMedia.copyToData({ srcPath: item.srcPath, fileName });
-    } else {
-      return;
+  const p = (async () => {
+    try {
+      if (item.blob) {
+        const base64 = await toBase64(item.blob);
+        await core().Filesystem.writeFile({
+          path: `capturas/${fileName}`,
+          data: base64,
+          directory: 'DATA',
+          recursive: true,
+        });
+      } else if (item.srcPath) {
+        await core().NativeMedia.copyToData({ srcPath: item.srcPath, fileName });
+      } else {
+        item._persistPromise = null;
+        return;
+      }
+      item.persistedPath = `capturas/${fileName}`;
+      item.fileName = fileName;
+      await refreshItemPlayableUrl(item);
+      updateManifest();
+    } catch (e) {
+      console.warn('Falha ao persistir captura', e);
+      item._persistPromise = null;
     }
-    item.persistedPath = `capturas/${fileName}`;
-    item.fileName = fileName;
-    updateManifest();
-  } catch (e) {
-    console.warn('Falha ao persistir captura', e);
-  }
+  })();
+  item._persistPromise = p;
+  return p;
 }
 
 async function deletePersisted(item) {
@@ -1626,16 +1659,10 @@ async function restoreGallery() {
 
 async function ensureBlob(item) {
   if (item.blob) return item.blob;
-  if (item.persistedPath) {
-    const base64 = await readDataFile(item.persistedPath);
-    return base64ToBlob(base64, item.mime);
+  if (isNative && item.srcPath && !item.persistedPath) {
+    await persistItem(item);
   }
-  if (item.srcPath && isNative) {
-    const fileName = `${item.id}.${galleryExt(item)}`;
-    const res = await core().NativeMedia.copyToData({ srcPath: item.srcPath, fileName });
-    item.persistedPath = (res && res.path) || `capturas/${fileName}`;
-    item.fileName = fileName;
-    updateManifest();
+  if (item.persistedPath) {
     const base64 = await readDataFile(item.persistedPath);
     return base64ToBlob(base64, item.mime);
   }
@@ -2853,9 +2880,16 @@ function buildPreviewModal(item) {
     item.kind === 'video'
       ? (() => {
           const video = el('video');
-          video.src = item.url;
           video.controls = true;
           video.autoplay = true;
+          video.setAttribute('playsinline', '');
+          // A URL de uma gravação nativa pode ser content://, que a WebView não
+          // reproduz. Resolvemos a URL do arquivo persistido antes de carregar.
+          playableVideoUrl(item)
+            .then((u) => {
+              if (u) video.src = u;
+            })
+            .catch(() => {});
           return video;
         })()
       : (() => {

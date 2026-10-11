@@ -671,6 +671,13 @@ select {
   background: #000;
 }
 
+.gallery-thumb .thumb-fallback,
+.gallery-strip .t .thumb-fallback {
+  width: 100%;
+  height: 100%;
+  background: #000;
+}
+
 .gallery-strip .t .play {
   position: absolute;
   inset: 0;

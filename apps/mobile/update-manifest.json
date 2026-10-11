@@ -1,7 +1,7 @@
 {
-  "version": "1.2",
-  "versionCode": 3,
+  "version": "1.3",
+  "versionCode": 4,
   "apkUrl": "https://github.com/cleberleonheart-maker/videoplat/releases/latest/download/CameraVideoPlat-release.apk",
-  "notes": "Zoom com pinça, marca d'água opcional, preferências salvas e opção de câmera nativa.",
+  "notes": "Correção dos vídeos gravados com a câmera nativa: miniatura e reprodução funcionando (antes aparecia o quadrado quebrado).",
   "publishedAt": "2026-10-11"
 }
