@@ -1,7 +1,7 @@
 {
-  "version": "1.4",
-  "versionCode": 5,
+  "version": "1.5",
+  "versionCode": 6,
   "apkUrl": "https://github.com/cleberleonheart-maker/videoplat/releases/latest/download/CameraVideoPlat-release.apk",
-  "notes": "Correção da orientação dos vídeos (selfie) que apareciam de cabeça pra baixo na reprodução dentro do app.",
+  "notes": "Correção de fechamento ao tocar na tela para focar a câmera (cancelAutoFocus falhava em alguns aparelhos e derrubava o app).",
   "publishedAt": "2026-10-11"
 }

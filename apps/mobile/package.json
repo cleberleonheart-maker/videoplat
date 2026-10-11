@@ -3,7 +3,8 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "sync": "npx cap sync android",
+    "patch:camera": "node scripts/patch-camera-preview.js",
+    "sync": "npm run patch:camera && npx cap sync android",
     "android:open": "npx cap open android",
     "apk": "npm run sync && cd android && ./gradlew assembleDebug",
     "apk:release": "npm run sync && cd android && ./gradlew assembleRelease"
