@@ -15,6 +15,9 @@ async function bootstrap() {
 
   app.setGlobalPrefix('api', { exclude: ['health'] });
   app.use(helmet());
+  // A API roda atrás do Caddy (1 hop); confia no X-Forwarded-For para que o
+  // rate limit por IP use o IP real do cliente.
+  app.getHttpAdapter().getInstance().set('trust proxy', 1);
   // A WebView do app Capacitor tem origem própria (https://localhost); permitimos
   // além do site, para o app da câmera conseguir publicar direto na API.
   app.enableCors({

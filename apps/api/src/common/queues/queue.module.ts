@@ -1,7 +1,11 @@
 import { Global, Module } from '@nestjs/common';
 import { BullModule } from '@nestjs/bullmq';
 import { ConfigModule, ConfigService } from '@nestjs/config';
+import Redis from 'ioredis';
 import { QUEUE_NAMES } from './queue.constants';
+
+/** Conexão ioredis compartilhada (fora do BullMQ) para rate limit etc. */
+export const IO_REDIS = 'IO_REDIS';
 
 @Global()
 @Module({
@@ -21,6 +25,18 @@ import { QUEUE_NAMES } from './queue.constants';
     }),
     BullModule.registerQueue({ name: QUEUE_NAMES.VIDEO }),
   ],
-  exports: [BullModule],
+  providers: [
+    {
+      provide: IO_REDIS,
+      inject: [ConfigService],
+      useFactory: (config: ConfigService) =>
+        new Redis(config.getOrThrow<string>('REDIS_URL'), {
+          // Falha rápido quando o Redis some, em vez de enfileirar comandos.
+          maxRetriesPerRequest: 2,
+          enableOfflineQueue: false,
+        }),
+    },
+  ],
+  exports: [BullModule, IO_REDIS],
 })
 export class QueueModule {}

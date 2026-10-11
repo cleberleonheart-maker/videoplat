@@ -10,6 +10,7 @@ import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { AuthService } from './auth.service';
 import { UsersService } from './users/users.service';
 import { Public } from '../../common/decorators/public.decorator';
+import { Throttle } from '../../common/throttle/throttle.decorator';
 import {
   AuthUser,
   CurrentUser,
@@ -30,12 +31,14 @@ export class AuthController {
   ) {}
 
   @Public()
+  @Throttle({ limit: 5, windowSec: 600 })
   @Post('register')
   register(@Body() dto: RegisterDto) {
     return this.auth.register(dto);
   }
 
   @Public()
+  @Throttle({ limit: 10, windowSec: 60 })
   @HttpCode(200)
   @Post('login')
   login(@Body() dto: LoginDto) {
@@ -43,6 +46,7 @@ export class AuthController {
   }
 
   @Public()
+  @Throttle({ limit: 30, windowSec: 60 })
   @HttpCode(200)
   @Post('refresh')
   refresh(@Body() dto: RefreshDto) {

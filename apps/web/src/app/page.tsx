@@ -30,7 +30,7 @@ export default async function HomePage() {
 
       {feed.subscribed.length > 0 && (
         <>
-          <h2>De canais que vocêAssina</h2>
+          <h2>De canais que você assina</h2>
           <VideoGrid videos={feed.subscribed} />
         </>
       )}

@@ -13,6 +13,7 @@ import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { VideosService } from './videos.service';
 import { UpdateVideoDto } from './dto/video.dto';
 import { Public } from '../../common/decorators/public.decorator';
+import { listQuery } from '../../common/utils/list-query';
 import {
   AuthUser,
   CurrentUser,
@@ -30,7 +31,8 @@ export class VideosController {
     @Query('limit') limit = '48',
     @Query('cursor') cursor?: string,
   ) {
-    return this.videos.listMine(user.id, Number(limit), cursor);
+    const query = listQuery(limit, cursor, 48);
+    return this.videos.listMine(user.id, query.limit, query.cursor);
   }
 
   @Public()
@@ -81,6 +83,7 @@ export class VideosController {
     @Query('limit') limit = '24',
     @Query('cursor') cursor?: string,
   ) {
-    return this.videos.listByChannel(handle, Number(limit), cursor);
+    const query = listQuery(limit, cursor, 24);
+    return this.videos.listByChannel(handle, query.limit, query.cursor);
   }
 }

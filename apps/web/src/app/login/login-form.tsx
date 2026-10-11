@@ -1,10 +1,11 @@
 'use client';
 
 import { useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 
 export function LoginForm() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const [mode, setMode] = useState<'login' | 'register'>('login');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -42,7 +43,11 @@ export function LoginForm() {
       // Em produção, migrar para cookie httpOnly + refresh rotation.
       window.localStorage.setItem('accessToken', body.accessToken);
 
-      router.push('/');
+      // Só aceita caminho relativo (evita open redirect via ?next=http://...).
+      const next = searchParams.get('next');
+      const target = next && next.startsWith('/') ? next : '/';
+      router.push(target);
+      router.refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Erro inesperado');
     } finally {

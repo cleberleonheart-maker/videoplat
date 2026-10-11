@@ -1,7 +1,9 @@
-import { apiFetch, PlaybackInfo, VideoCard, VideoDetail, formatViews } from '@/lib/api';
+import { apiFetch, PlaybackInfo, VideoCard, VideoDetail } from '@/lib/api';
 import { WatchPlayer } from '@/components/watch-player';
 import { VideoOwnerActions } from '@/components/video-owner-actions';
 import { VideoGrid } from '@/components/video-grid';
+import { VideoInteractions } from '@/components/video-interactions';
+import { CommentsSection } from '@/components/comments-section';
 
 // O token do cookie httpOnly muda a renderização server-side do player.
 export const dynamic = 'force-dynamic';
@@ -51,10 +53,9 @@ export default async function WatchPage({
         : 'O vídeo está sendo processado. O player aparece aqui em breve.';
   }
 
-  const poster =
-    video.thumbnailUrl ??
-    video.thumbnails?.map((t) => t.objectKey).slice(0, 1)[0] ??
-    null;
+  // Só a URL pronta da thumbnail serve como poster; `objectKey` cru não é
+  // uma URL pública e quebrava a imagem.
+  const poster = video.thumbnailUrl ?? null;
 
   return (
     <div className="watch-grid">
@@ -105,7 +106,9 @@ export default async function WatchPage({
           style={{
             display: 'flex',
             alignItems: 'center',
+            justifyContent: 'space-between',
             gap: 16,
+            flexWrap: 'wrap',
             paddingBottom: 16,
             borderBottom: '1px solid var(--border)',
           }}
@@ -115,14 +118,24 @@ export default async function WatchPage({
               {video.channel.name}
             </p>
             <p style={{ margin: 0, fontSize: 13, color: 'var(--muted)' }}>
-              {formatViews(video.stats?.views)}
+              @{video.channel.handle}
             </p>
           </div>
 
-          <button className="secondary" style={{ marginLeft: 'auto' }}>
-            {video.subscribed ? 'Inscrito' : 'Inscrever-se'}
-          </button>
-          <VideoOwnerActions videoId={video.id} uploaderId={video.uploaderId} />
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            <VideoInteractions
+              videoId={video.id}
+              handle={video.channel.handle}
+              initialSubscribed={video.subscribed}
+              initialReaction={video.viewerReaction ?? null}
+              initialLikes={video.stats?.likes ?? 0}
+              initialViews={video.stats?.views ?? 0}
+            />
+            <VideoOwnerActions
+              videoId={video.id}
+              uploaderId={video.uploaderId}
+            />
+          </div>
         </div>
 
         {video.description && (
@@ -140,6 +153,8 @@ export default async function WatchPage({
             {video.description}
           </div>
         )}
+
+        <CommentsSection videoId={video.id} />
       </div>
 
       <aside>

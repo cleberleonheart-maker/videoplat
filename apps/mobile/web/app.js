@@ -200,6 +200,14 @@ function stamp() {
   )}${p(d.getSeconds())}`;
 }
 
+function fmtDateTime(ms) {
+  const d = new Date(ms || Date.now());
+  const p = (n) => String(n).padStart(2, '0');
+  return `${p(d.getDate())}/${p(d.getMonth() + 1)}/${d.getFullYear()} ${p(d.getHours())}:${p(
+    d.getMinutes(),
+  )}`;
+}
+
 function extFor(mime) {
   if (mime.startsWith('video/mp4')) return 'mp4';
   if (mime.startsWith('video/webm')) return 'webm';
@@ -892,7 +900,11 @@ async function nativeTorch() {
 function addToGallery(item) {
   state.gallery = [item, ...state.gallery];
   render();
-  persistItem(item);
+  // Depois de persistir, os vídeos nativos passam a ter um caminho legível;
+  // re-renderiza uma vez para o poster desses vídeos ser gerado.
+  Promise.resolve(persistItem(item)).then(() => {
+    if (item.kind === 'video' && !item.poster) render();
+  });
 }
 
 function doCapture() {
@@ -1235,6 +1247,126 @@ async function readDataFile(path) {
   return typeof res.data === 'string' ? res.data : String(res.data);
 }
 
+/** URL que a WebView consegue carregar a partir de um arquivo local. */
+function fileSrc(uri) {
+  try {
+    if (uri && window.Capacitor && typeof window.Capacitor.convertFileSrc === 'function') {
+      return window.Capacitor.convertFileSrc(uri);
+    }
+  } catch (_) {}
+  return uri;
+}
+
+/** Extrai um frame do vídeo como data URL (thumbnail), sem travar a UI. */
+function captureVideoPoster(url) {
+  return new Promise((resolve) => {
+    const vid = document.createElement('video');
+    vid.muted = true;
+    vid.setAttribute('playsinline', '');
+    vid.setAttribute('preload', 'metadata');
+    let settled = false;
+    const finish = (val) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      resolve(val);
+    };
+    const timeout = setTimeout(() => finish(null), 8000);
+    const draw = () => {
+      try {
+        const vw = vid.videoWidth;
+        const vh = vid.videoHeight;
+        if (!vw || !vh) return finish(null);
+        const cw = 240;
+        const ch = Math.max(1, Math.round(cw * (vh / vw)));
+        const c = document.createElement('canvas');
+        c.width = cw;
+        c.height = ch;
+        c.getContext('2d').drawImage(vid, 0, 0, cw, ch);
+        finish(c.toDataURL('image/jpeg', 0.6));
+      } catch (_) {
+        finish(null);
+      }
+    };
+    vid.addEventListener('seeked', draw);
+    vid.addEventListener('loadeddata', () => {
+      try {
+        const d = vid.duration || 0;
+        vid.currentTime = Math.min(0.1, d > 0 ? d / 2 : 0.1);
+      } catch (_) {
+        draw();
+      }
+    });
+    vid.addEventListener('error', () => finish(null));
+    vid.src = url;
+  });
+}
+
+/** Gera (uma vez) o poster de um vídeo a partir do blob/persistido. */
+function ensureVideoPoster(item) {
+  if (item.poster) return Promise.resolve(item.poster);
+  if (item._posterPromise) return item._posterPromise;
+  const p = (async () => {
+    let url = null;
+    let revoke = false;
+    try {
+      if (item.blob) {
+        url = URL.createObjectURL(item.blob);
+        revoke = true;
+      } else if (item.persistedPath) {
+        const b64 = await readDataFile(item.persistedPath);
+        url = URL.createObjectURL(base64ToBlob(b64, item.mime));
+        revoke = true;
+      } else {
+        // Ainda não persistido (ex.: gravação nativa): tenta de novo depois.
+        return null;
+      }
+      const poster = await captureVideoPoster(url);
+      if (poster) item.poster = poster;
+      return poster;
+    } catch (_) {
+      return null;
+    } finally {
+      if (revoke && url) URL.revokeObjectURL(url);
+    }
+  })();
+  item._posterPromise = p;
+  p.then((res) => {
+    if (!res) item._posterPromise = null;
+  }).catch(() => {
+    item._posterPromise = null;
+  });
+  return p;
+}
+
+/**
+ * Insere a mídia de um item de galeria dentro de um botão de thumbnail.
+ * Vídeos não podem usar <img> como capa, então mostramos o <video> e, quando
+ * possível, trocamos por um poster gerado em canvas.
+ */
+function appendThumb(btn, item) {
+  if (item.kind !== 'video' || item.poster) {
+    const img = el('img');
+    img.src = item.kind === 'video' ? item.poster : item.url;
+    btn.appendChild(img);
+    return;
+  }
+  const vid = el('video');
+  vid.muted = true;
+  vid.setAttribute('playsinline', '');
+  vid.setAttribute('preload', 'metadata');
+  vid.src = item.url;
+  btn.appendChild(vid);
+  ensureVideoPoster(item)
+    .then((poster) => {
+      if (!poster || !btn.contains(vid)) return;
+      const img = el('img');
+      img.src = poster;
+      btn.replaceChild(img, vid);
+    })
+    .catch(() => {});
+}
+
 function updateManifest() {
   try {
     const list = state.gallery
@@ -1298,17 +1430,19 @@ async function restoreGallery() {
   }
   const MAX = 24;
   for (const meta of list.slice(0, MAX)) {
+    // Não lê o arquivo agora: carregar o base64 de dezenas de vídeos no boot
+    // travava o app. Guardamos o caminho e deixamos a WebView ler sob demanda.
     try {
-      const base64 = await readDataFile(meta.path);
-      const blob = base64ToBlob(base64, meta.mime);
+      const res = await core().Filesystem.getUri({ path: meta.path, directory: 'DATA' });
+      const uri = (res && res.uri) || meta.path;
       state.gallery.push({
         id: meta.id,
         kind: meta.kind,
-        url: URL.createObjectURL(blob),
-        blob,
+        url: fileSrc(uri),
+        blob: null,
         width: meta.width,
         height: meta.height,
-        size: blob.size,
+        size: meta.size,
         createdAt: meta.createdAt,
         mime: meta.mime,
         persistedPath: meta.path,
@@ -1478,7 +1612,13 @@ async function runPublish() {
         meta.trimEndSec = end;
       }
     }
-    const out = await uploadVideoBlob(blob, contentType, meta);
+    const out = await uploadVideoBlob(blob, contentType, meta, (percent, msg) => {
+      // Atualiza só o progresso; re-renderizar aqui recriava o editor de corte
+      // (perdendo o corte escolhido) a cada tick.
+      state.publishProgress = percent;
+      if (msg) state.publishMsg = msg;
+      updatePublishProgressUI(percent, msg);
+    });
     state.publishMsg = 'Publicado! Processando no site…';
     state.publishBusy = false;
     render();
@@ -1491,7 +1631,7 @@ async function runPublish() {
   }
 }
 
-async function uploadVideoBlob(blob, contentType, meta = {}) {
+async function uploadVideoBlob(blob, contentType, meta = {}, onProgress) {
   const token = getToken();
   const ext =
     contentType.indexOf('quicktime') >= 0 ? 'mov' : contentType.indexOf('webm') >= 0 ? 'webm' : 'mp4';
@@ -1522,9 +1662,8 @@ async function uploadVideoBlob(blob, contentType, meta = {}) {
       if (!etag) throw new Error('servidor não retornou ETag');
       parts.push({ partNumber: part.partNumber, etag });
       uploaded += chunk.size;
-      state.publishProgress = Math.round((uploaded / blob.size) * 100);
-      state.publishMsg = 'Enviando… ' + state.publishProgress + '%';
-      render();
+      const percent = Math.round((uploaded / blob.size) * 100);
+      if (onProgress) onProgress(percent, 'Enviando… ' + percent + '%');
     }
   };
   await Promise.all(Array.from({ length: workers }, worker));
@@ -1546,6 +1685,15 @@ async function uploadVideoBlob(blob, contentType, meta = {}) {
         : {}),
     },
   });
+}
+
+function updatePublishProgressUI(percent, msg) {
+  try {
+    const bar = document.getElementById('publish-progress-bar');
+    if (bar) bar.style.width = Math.max(0, Math.min(100, percent || 0)) + '%';
+    const label = document.getElementById('publish-progress-label');
+    if (label && msg) label.textContent = msg;
+  } catch (_) {}
 }
 
 function buildLoginModal() {
@@ -1702,20 +1850,26 @@ function buildTrimEditor() {
     if (!d || !Number.isFinite(d)) return;
     state0.duration = d;
     state0.ready = true;
+    const firstLoad = state.publishDuration !== d || state.publishTrimEnd === 0;
     state.publishDuration = d;
     [rowStart, rowEnd, rowCover].forEach((r) => {
       r.row.style.display = 'flex';
       r.input.disabled = false;
       r.input.max = String(d);
     });
-    rowStart.input.value = '0';
-    rowEnd.input.value = String(d);
-    state.publishTrimStart = 0;
-    state.publishTrimEnd = d;
-    const coverDefault = Math.min(d * 0.3, d);
+    // Só define o corte/capa padrão na primeira carga; re-renderizações
+    // preservam o que o usuário já escolheu.
+    const start = firstLoad ? 0 : Math.min(Number(state.publishTrimStart) || 0, d);
+    const end = firstLoad ? d : Math.min(Number(state.publishTrimEnd) || d, d) || d;
+    const coverDefault = state.publishCoverTime != null ? state.publishCoverTime : Math.min(d * 0.3, d);
+    state.publishTrimStart = start;
+    state.publishTrimEnd = end;
+    if (firstLoad) state.publishCoverTime = coverDefault;
+    rowStart.input.value = String(start);
+    rowEnd.input.value = String(end);
     rowCover.input.value = String(coverDefault);
-    rowStart.val.textContent = fmt(0);
-    rowEnd.val.textContent = fmt(d);
+    rowStart.val.textContent = fmt(start);
+    rowEnd.val.textContent = fmt(end);
     rowCover.val.textContent = fmt(coverDefault);
     hint.textContent = 'Arraste para cortar e escolher a capa';
     seekTo(coverDefault);
@@ -1811,7 +1965,27 @@ function buildPublishModal() {
     box.appendChild(buildTrimEditor());
   }
 
-  if (state.publishMsg) {
+  if (state.publishBusy) {
+    const wrap = el('div');
+    wrap.id = 'publish-progress';
+    wrap.style.cssText = 'display:flex;flex-direction:column;gap:6px;margin-top:6px;';
+    const track = el('div');
+    track.style.cssText =
+      'height:6px;border-radius:3px;background:var(--border,#333);overflow:hidden;';
+    const bar = el('div');
+    bar.id = 'publish-progress-bar';
+    bar.style.cssText =
+      'height:100%;width:' +
+      Math.max(0, Math.min(100, state.publishProgress || 0)) +
+      '%;background:var(--accent,#3ea6ff);transition:width 200ms;';
+    track.appendChild(bar);
+    const label = el('div', '', state.publishMsg || 'Preparando…');
+    label.id = 'publish-progress-label';
+    label.style.cssText = 'font-size:12px;opacity:.75;';
+    wrap.appendChild(track);
+    wrap.appendChild(label);
+    box.appendChild(wrap);
+  } else if (state.publishMsg) {
     box.appendChild(el('div', 'toast ok', state.publishMsg));
   }
 
@@ -2237,7 +2411,7 @@ function buildApp() {
   const controls = el('div', 'controls');
   const gthumb = el('button', 'gallery-thumb');
   if (state.gallery.length > 0) {
-    gthumb.appendChild(el('img')).src = state.gallery[0].url;
+    appendThumb(gthumb, state.gallery[0]);
     const badge = el('span', 'count', String(state.gallery.length));
     gthumb.appendChild(badge);
     gthumb.addEventListener('click', () => openPreview(state.gallery[0]));
@@ -2295,7 +2469,7 @@ function buildApp() {
     const strip = el('div', 'gallery-strip');
     state.gallery.forEach((item) => {
       const b = el('button', 't');
-      b.appendChild(el('img')).src = item.url;
+      appendThumb(b, item);
       if (item.kind === 'video') b.appendChild(el('span', 'play', '▶'));
       b.addEventListener('click', () => openPreview(item));
       strip.appendChild(b);
@@ -2518,10 +2692,12 @@ function buildPreviewModal(item) {
   actions.appendChild(closeBtn);
   modal.appendChild(actions);
 
+  const dims = item.width && item.height ? ` · ${item.width}×${item.height}` : '';
+  const size = item.size ? ` · ${fmtBytes(item.size)}` : '';
   const meta = el(
     'div',
     'meta',
-    `${item.kind === 'photo' ? 'Foto' : 'Vídeo'} · ${item.width}×${item.height} · ${fmtBytes(item.size)} · ${stamp()}`,
+    `${item.kind === 'photo' ? 'Foto' : 'Vídeo'}${dims}${size} · ${fmtDateTime(item.createdAt)}`,
   );
   modal.appendChild(meta);
 

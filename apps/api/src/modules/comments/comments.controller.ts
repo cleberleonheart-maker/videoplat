@@ -12,6 +12,7 @@ import { ReactionType } from '@prisma/client';
 import { IsEnum, IsOptional, IsString, Length } from 'class-validator';
 import { CommentsService } from './comments.service';
 import { Public } from '../../common/decorators/public.decorator';
+import { listQuery } from '../../common/utils/list-query';
 import {
   AuthUser,
   CurrentUser,
@@ -44,7 +45,8 @@ export class CommentsController {
     @Query('limit') limit = '20',
     @Query('cursor') cursor?: string,
   ) {
-    return this.comments.list(videoId, Number(limit), cursor);
+    const query = listQuery(limit, cursor, 20);
+    return this.comments.list(videoId, query.limit, query.cursor);
   }
 
   @ApiBearerAuth()

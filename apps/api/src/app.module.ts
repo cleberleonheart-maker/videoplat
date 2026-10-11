@@ -1,6 +1,6 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
-import { APP_FILTER } from '@nestjs/core';
+import { APP_FILTER, APP_GUARD } from '@nestjs/core';
 import { ScheduleModule } from '@nestjs/schedule';
 import { PrismaModule } from './common/prisma/prisma.module';
 import { QueueModule } from './common/queues/queue.module';
@@ -16,6 +16,7 @@ import { CommentsModule } from './modules/comments/comments.module';
 import { SubscriptionsModule } from './modules/subscriptions/subscriptions.module';
 import { PlaylistsModule } from './modules/playlists/playlists.module';
 import { HealthController } from './health.controller';
+import { ThrottleGuard } from './common/throttle/throttle.guard';
 
 @Module({
   imports: [
@@ -40,6 +41,7 @@ import { HealthController } from './health.controller';
   controllers: [HealthController],
   providers: [
     { provide: APP_FILTER, useClass: HttpExceptionFilter },
+    { provide: APP_GUARD, useClass: ThrottleGuard },
   ],
 })
 export class AppModule {}

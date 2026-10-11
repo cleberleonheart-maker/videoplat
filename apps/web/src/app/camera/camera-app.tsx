@@ -1,6 +1,9 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { apiFetch } from '@/lib/api';
+import { getToken } from '@/lib/session';
+import { uploadVideoBlob } from '@/lib/upload';
 
 type Mode = 'photo' | 'video';
 type RecState = 'inactive' | 'recording' | 'paused';
@@ -162,6 +165,23 @@ export function CameraApp() {
   const [showFilters, setShowFilters] = useState(false);
   const [showAspect, setShowAspect] = useState(false);
   const [busy, setBusy] = useState(false);
+
+  // Publicação no site (reusa o fluxo de upload multipart do S3).
+  const [publishItem, setPublishItem] = useState<GalleryItem | null>(null);
+  const [publishTitle, setPublishTitle] = useState('');
+  const [publishDesc, setPublishDesc] = useState('');
+  const [publishVisibility, setPublishVisibility] = useState<'PUBLIC' | 'UNLISTED' | 'PRIVATE'>('PUBLIC');
+  const [publishProgress, setPublishProgress] = useState(0);
+  const [publishPhase, setPublishPhase] = useState<'form' | 'uploading' | 'done'>('form');
+  const [publishError, setPublishError] = useState<string | null>(null);
+  const [publishResultId, setPublishResultId] = useState<string | null>(null);
+
+  const [loginOpen, setLoginOpen] = useState(false);
+  const [loginEmail, setLoginEmail] = useState('');
+  const [loginPassword, setLoginPassword] = useState('');
+  const [loginBusy, setLoginBusy] = useState(false);
+  const [loginError, setLoginError] = useState<string | null>(null);
+  const pendingPublishRef = useRef<GalleryItem | null>(null);
 
   const activeFilter = useMemo(() => FILTERS.find((f) => f.id === filterId)!, [filterId]);
   const activeAspect = useMemo(() => ASPECTS.find((a) => a.id === aspectId)!, [aspectId]);
@@ -577,6 +597,80 @@ export function CameraApp() {
     a.click();
   }, []);
 
+  const openPublish = useCallback((item: GalleryItem) => {
+    if (!getToken()) {
+      pendingPublishRef.current = item;
+      setLoginError(null);
+      setLoginOpen(true);
+      return;
+    }
+    setPublishItem(item);
+    setPublishTitle(item.kind === 'video' ? `Vídeo ${stamp()}` : `Foto ${stamp()}`);
+    setPublishDesc('');
+    setPublishVisibility('PUBLIC');
+    setPublishProgress(0);
+    setPublishPhase('form');
+    setPublishError(null);
+    setPublishResultId(null);
+  }, []);
+
+  const submitLogin = useCallback(async () => {
+    setLoginBusy(true);
+    setLoginError(null);
+    try {
+      const body = await apiFetch<{ accessToken: string }>('/api/auth/login', {
+        method: 'POST',
+        body: JSON.stringify({ email: loginEmail, password: loginPassword }),
+      });
+      window.localStorage.setItem('accessToken', body.accessToken);
+      setLoginOpen(false);
+      setLoginPassword('');
+      // Se havia um item escolhido para publicar, abre o formulário agora.
+      const pending = pendingPublishRef.current;
+      pendingPublishRef.current = null;
+      if (pending) openPublish(pending);
+    } catch (err) {
+      setLoginError(err instanceof Error ? err.message : 'Falha ao entrar');
+    } finally {
+      setLoginBusy(false);
+    }
+  }, [loginEmail, loginPassword, openPublish]);
+
+  const submitPublish = useCallback(async () => {
+    if (!publishItem) return;
+    const token = getToken();
+    if (!token) {
+      setPublishError('Sessão expirada. Entre novamente.');
+      return;
+    }
+    setPublishError(null);
+    setPublishPhase('uploading');
+    setPublishProgress(0);
+    try {
+      const response = await fetch(publishItem.url);
+      const blob = await response.blob();
+      const extension = extensionFor(publishItem.mimeType);
+      const id = await uploadVideoBlob(
+        blob,
+        `camera-${stamp()}.${extension}`,
+        publishItem.mimeType || 'video/mp4',
+        {
+          title: publishTitle || 'Vídeo sem título',
+          description: publishDesc,
+          visibility: publishVisibility,
+        },
+        token,
+        (percent) => setPublishProgress(percent),
+      );
+      setPublishResultId(id);
+      setPublishPhase('done');
+    } catch (err) {
+      setPublishError(err instanceof Error ? err.message : 'Falha ao publicar');
+      setPublishPhase('form');
+    }
+  }, [publishDesc, publishItem, publishTitle, publishVisibility]);
+
+
   const stageRatio = useMemo(() => {
     if (activeAspect.ratio) return activeAspect.ratio;
     return freeRatio ?? 16 / 9;
@@ -937,6 +1031,11 @@ export function CameraApp() {
               <span className="muted" style={{ flex: 1, fontSize: 12 }}>
                 {preview.width}×{preview.height} · {formatBytes(preview.sizeBytes)}
               </span>
+              {preview.kind === 'video' && (
+                <button type="button" onClick={() => openPublish(preview)}>
+                  Publicar no site
+                </button>
+              )}
               <button type="button" onClick={() => downloadFile(preview)}>Baixar</button>
               <button
                 type="button"
@@ -951,6 +1050,173 @@ export function CameraApp() {
               <button type="button" className="secondary" onClick={() => setPreview(null)}>
                 Fechar
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {publishItem && (
+        <div
+          className="cam-preview"
+          style={{ ...modalStyle, zIndex: 130 }}
+          onClick={() => publishPhase !== 'uploading' && setPublishItem(null)}
+        >
+          <div style={modalCardStyle} onClick={(e) => e.stopPropagation()}>
+            <div style={{ padding: 16, background: 'var(--surface)' }}>
+              <strong style={{ fontSize: 15 }}>Publicar no VideoPlat</strong>
+
+              {publishPhase === 'done' ? (
+                <>
+                  <p className="success" style={{ marginTop: 12 }}>
+                    Vídeo publicado! Ele será processado em segundo plano.
+                  </p>
+                  <div style={{ display: 'flex', gap: 10, marginTop: 12 }}>
+                    <a href={`/watch?v=${publishResultId}`}>
+                      <button type="button">Ver vídeo</button>
+                    </a>
+                    <button
+                      type="button"
+                      className="secondary"
+                      onClick={() => {
+                        setPublishItem(null);
+                        setPreview(null);
+                      }}
+                    >
+                      Fechar
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <label htmlFor="pub-title">Título</label>
+                  <input
+                    id="pub-title"
+                    value={publishTitle}
+                    onChange={(e) => setPublishTitle(e.target.value)}
+                    maxLength={140}
+                    disabled={publishPhase === 'uploading'}
+                  />
+
+                  <label htmlFor="pub-desc">Descrição</label>
+                  <textarea
+                    id="pub-desc"
+                    value={publishDesc}
+                    onChange={(e) => setPublishDesc(e.target.value)}
+                    rows={3}
+                    maxLength={5000}
+                    disabled={publishPhase === 'uploading'}
+                  />
+
+                  <label htmlFor="pub-vis">Visibilidade</label>
+                  <select
+                    id="pub-vis"
+                    value={publishVisibility}
+                    onChange={(e) =>
+                      setPublishVisibility(
+                        e.target.value as 'PUBLIC' | 'UNLISTED' | 'PRIVATE',
+                      )
+                    }
+                    disabled={publishPhase === 'uploading'}
+                  >
+                    <option value="PUBLIC">Público</option>
+                    <option value="UNLISTED">Não listado</option>
+                    <option value="PRIVATE">Privado</option>
+                  </select>
+
+                  {publishPhase === 'uploading' && (
+                    <div style={{ marginTop: 14 }}>
+                      <div
+                        style={{
+                          height: 6,
+                          borderRadius: 3,
+                          background: 'var(--border)',
+                          overflow: 'hidden',
+                        }}
+                      >
+                        <div
+                          style={{
+                            height: '100%',
+                            width: `${publishProgress}%`,
+                            background: 'var(--accent)',
+                            transition: 'width 200ms',
+                          }}
+                        />
+                      </div>
+                      <p className="muted" style={{ fontSize: 12, marginTop: 6 }}>
+                        Enviando… {publishProgress}%
+                      </p>
+                    </div>
+                  )}
+
+                  {publishError && <p className="error">{publishError}</p>}
+
+                  <div style={{ display: 'flex', gap: 10, marginTop: 16 }}>
+                    <button
+                      type="button"
+                      onClick={() => void submitPublish()}
+                      disabled={publishPhase === 'uploading' || !publishTitle.trim()}
+                    >
+                      {publishPhase === 'uploading' ? 'Publicando…' : 'Publicar'}
+                    </button>
+                    <button
+                      type="button"
+                      className="secondary"
+                      onClick={() => setPublishItem(null)}
+                      disabled={publishPhase === 'uploading'}
+                    >
+                      Cancelar
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {loginOpen && (
+        <div
+          className="cam-preview"
+          style={{ ...modalStyle, zIndex: 140 }}
+          onClick={() => !loginBusy && setLoginOpen(false)}
+        >
+          <div style={modalCardStyle} onClick={(e) => e.stopPropagation()}>
+            <div style={{ padding: 16, background: 'var(--surface)' }}>
+              <strong style={{ fontSize: 15 }}>Entrar para publicar</strong>
+              <label htmlFor="cam-login-email">Email</label>
+              <input
+                id="cam-login-email"
+                type="email"
+                value={loginEmail}
+                onChange={(e) => setLoginEmail(e.target.value)}
+                autoComplete="email"
+              />
+              <label htmlFor="cam-login-pass">Senha</label>
+              <input
+                id="cam-login-pass"
+                type="password"
+                value={loginPassword}
+                onChange={(e) => setLoginPassword(e.target.value)}
+                autoComplete="current-password"
+              />
+              {loginError && <p className="error">{loginError}</p>}
+              <div style={{ display: 'flex', gap: 10, marginTop: 16 }}>
+                <button
+                  type="button"
+                  onClick={() => void submitLogin()}
+                  disabled={loginBusy || !loginEmail || !loginPassword}
+                >
+                  {loginBusy ? 'Entrando…' : 'Entrar'}
+                </button>
+                <button
+                  type="button"
+                  className="secondary"
+                  onClick={() => setLoginOpen(false)}
+                  disabled={loginBusy}
+                >
+                  Cancelar
+                </button>
+              </div>
             </div>
           </div>
         </div>

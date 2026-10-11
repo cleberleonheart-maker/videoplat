@@ -2,6 +2,7 @@ import { Controller, Get, Query } from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
 import { FeedService } from './feed.service';
 import { Public } from '../../common/decorators/public.decorator';
+import { listQuery } from '../../common/utils/list-query';
 import {
   AuthUser,
   CurrentUser,
@@ -15,6 +16,7 @@ export class FeedController {
   @Public()
   @Get()
   home(@CurrentUser() user: AuthUser | null, @Query('limit') limit = '24') {
-    return this.feed.home(user?.id, Number(limit));
+    const { limit: safeLimit } = listQuery(limit, undefined, 24);
+    return this.feed.home(user?.id, safeLimit);
   }
 }
