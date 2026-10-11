@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
+import { notifyAuthChanged } from '@/lib/session';
 
 export function LoginForm() {
   const router = useRouter();
@@ -42,6 +43,7 @@ export function LoginForm() {
       // MVP: o access token fica em localStorage para o upload client-side.
       // Em produção, migrar para cookie httpOnly + refresh rotation.
       window.localStorage.setItem('accessToken', body.accessToken);
+      notifyAuthChanged();
 
       // Só aceita caminho relativo (evita open redirect via ?next=http://...).
       const next = searchParams.get('next');

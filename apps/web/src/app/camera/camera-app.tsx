@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { apiFetch } from '@/lib/api';
-import { getToken } from '@/lib/session';
+import { getToken, notifyAuthChanged } from '@/lib/session';
 import { uploadVideoBlob } from '@/lib/upload';
 
 type Mode = 'photo' | 'video';
@@ -623,6 +623,7 @@ export function CameraApp() {
         body: JSON.stringify({ email: loginEmail, password: loginPassword }),
       });
       window.localStorage.setItem('accessToken', body.accessToken);
+      notifyAuthChanged();
       setLoginOpen(false);
       setLoginPassword('');
       // Se havia um item escolhido para publicar, abre o formulário agora.

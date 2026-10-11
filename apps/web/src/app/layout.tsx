@@ -1,5 +1,6 @@
 import type { Metadata } from 'next';
 import Link from 'next/link';
+import { HeaderAccount } from '@/components/header-account';
 import './globals.css';
 
 export const metadata: Metadata = {
@@ -56,9 +57,7 @@ export default function RootLayout({
             <Link href="/upload" style={{ fontSize: 14 }}>
               Enviar
             </Link>
-            <Link href="/login" style={{ fontSize: 14 }}>
-              Entrar
-            </Link>
+            <HeaderAccount />
           </nav>
         </header>
 
