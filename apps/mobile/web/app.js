@@ -65,6 +65,45 @@ const camPrev = () => {
   }
 };
 
+// ---- Preferências persistidas (sobrevivem ao fechar o app) ----
+const PREFS_KEY = 'vp_prefs_v1';
+const PREF_FIELDS = [
+  'mode',
+  'aspectId',
+  'resolutionId',
+  'filterId',
+  'timer',
+  'mirror',
+  'grid',
+  'audioOn',
+  'forceNative',
+  'watermarkOn',
+  'watermarkText',
+];
+let prefsSaveT = 0;
+
+function loadPrefs() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(PREFS_KEY) || '{}');
+    for (const k of PREF_FIELDS) {
+      if (raw[k] !== undefined && raw[k] !== null) state[k] = raw[k];
+    }
+  } catch (_) {
+    /* preferências corrompidas: mantém os padrões */
+  }
+}
+
+function savePrefs() {
+  if (prefsSaveT) clearTimeout(prefsSaveT);
+  prefsSaveT = setTimeout(() => {
+    try {
+      const out = {};
+      for (const k of PREF_FIELDS) out[k] = state[k];
+      localStorage.setItem(PREFS_KEY, JSON.stringify(out));
+    } catch (_) {}
+  }, 250);
+}
+
 /* ---------------- estado ---------------- */
 
 const state = {
@@ -102,6 +141,10 @@ const state = {
   _recoveries: 0,
   _probeState: '', // ok | black | dim | erro (preview via canvas)
   nativeMode: false, // preview nativo (CameraPreview) no lugar do WebView
+  forceNative: false, // preferência: forçar preview nativo (CameraPreview)
+  // marca d'água
+  watermarkOn: false,
+  watermarkText: 'VideoPlat',
   // conta / publicação no VideoPlat
   accountEmail: null,
   loginOpen: false,
@@ -166,6 +209,8 @@ const refs = {
   recordNative: 0,
   elapsedBase: 0,
   focusT: 0,
+  zoomApplied: undefined,
+  zoomAt: 0,
 };
 
 /* ---------------- helpers ---------------- */
@@ -389,8 +434,18 @@ async function enumerateDevices() {
 
 async function startCamera(opts = {}) {
   if (state.nativeMode) {
-    state.starting = false;
-    return;
+    // Já em modo nativo: só continua se o usuário acabou de desligar a opção.
+    if (!state.forceNative) {
+      await stopNativePreview();
+    } else {
+      state.starting = false;
+      return;
+    }
+  }
+  // Preferência do usuário: usa o preview nativo (CameraPreview) já de início.
+  if (state.forceNative && camPrev()) {
+    const okNative = await startNativePreview();
+    if (okNative) return;
   }
   state.starting = true;
   state.error = null;
@@ -511,10 +566,40 @@ setInterval(() => {
   state._lastFrames = frames;
 }, 5000);
 
+function clampZoom(value) {
+  return Math.min(Math.max(value, state.zoomCap.min), state.zoomCap.max);
+}
+
+function setZoomDisplay() {
+  const range = document.getElementById('zoom-range');
+  if (range && document.activeElement !== range) range.value = state.zoom;
+  const label = document.getElementById('zoom-label');
+  if (label) label.textContent = state.zoom.toFixed(1) + '×';
+}
+
+/* Aplica zoom sem re-renderizar — usado durante a pinça, pois recriar a tela
+ * a cada movimento quebraria o próprio gesto de dois dedos. */
+function applyZoomLive(value) {
+  const track = state.stream ? state.stream.getVideoTracks()[0] : null;
+  if (!track || !state.zoomCap) return;
+  const clamped = clampZoom(value);
+  state.zoom = clamped;
+  setZoomDisplay();
+  const now = Date.now();
+  if (refs.zoomApplied !== undefined && Math.abs(clamped - refs.zoomApplied) < 0.01 && now - (refs.zoomAt || 0) < 60) return;
+  refs.zoomApplied = clamped;
+  refs.zoomAt = now;
+  try {
+    track.applyConstraints({ advanced: [{ zoom: clamped }] });
+  } catch (_) {
+    /* zoom não suportado */
+  }
+}
+
 async function applyZoom(value) {
   const track = state.stream ? state.stream.getVideoTracks()[0] : null;
   if (!track || !state.zoomCap) return;
-  const clamped = Math.min(Math.max(value, state.zoomCap.min), state.zoomCap.max);
+  const clamped = clampZoom(value);
   state.zoom = clamped;
   render();
   try {
@@ -522,6 +607,45 @@ async function applyZoom(value) {
   } catch (_) {
     /* zoom não suportado */
   }
+}
+
+let zoomGestureActive = false;
+
+/* Pinça para dar zoom (dois dedos). Ao terminar, re-renderiza para sincronizar
+ * a interface com o valor final. */
+function bindPinchZoom(stage) {
+  let start = null;
+  const dist = (a, b) => Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
+  const valid = () => state.zoomCap && !state.nativeMode && state.ready && state.rec === 'inactive';
+  stage.addEventListener(
+    'touchstart',
+    (e) => {
+      if (!valid() || e.touches.length !== 2) return;
+      zoomGestureActive = true;
+      start = { d0: dist(e.touches[0], e.touches[1]), z0: state.zoom };
+    },
+    { passive: true },
+  );
+  stage.addEventListener(
+    'touchmove',
+    (e) => {
+      if (!start || e.touches.length !== 2) return;
+      e.preventDefault();
+      const d = dist(e.touches[0], e.touches[1]);
+      if (start.d0 <= 0) return;
+      applyZoomLive(start.z0 * (d / start.d0));
+    },
+    { passive: false },
+  );
+  const end = (e) => {
+    if (e.touches.length < 2 && start) {
+      start = null;
+      zoomGestureActive = false;
+      render();
+    }
+  };
+  stage.addEventListener('touchend', end, { passive: true });
+  stage.addEventListener('touchcancel', end, { passive: true });
 }
 
 async function toggleTorch() {
@@ -602,7 +726,8 @@ function bindTapToFocus(stage) {
   const isChrome = (t) =>
     !!(t && t.closest && t.closest('.hud,.rec-badge,.zoombar,.pill,.center-overlay'));
   stage.addEventListener('pointerdown', (e) => {
-    if (isChrome(e.target) || !state.stream || state.rec !== 'inactive') return;
+    if (zoomGestureActive || isChrome(e.target) || !state.stream || state.rec !== 'inactive') return;
+    if (e.pointerType === 'touch' && e.isPrimary === false) return;
     sx = e.clientX;
     sy = e.clientY;
     held = false;
@@ -617,6 +742,7 @@ function bindTapToFocus(stage) {
   });
   stage.addEventListener('pointercancel', clearHold);
   stage.addEventListener('pointerup', (e) => {
+    if (zoomGestureActive) return;
     const wasHold = held;
     clearHold();
     if (wasHold || isChrome(e.target)) return;
@@ -635,6 +761,27 @@ function cropRect(vw, vh) {
   if (vw / vh > ratio) cw = Math.round(vh * ratio);
   else if (vw / vh < ratio) ch = Math.round(vw / ratio);
   return { x: Math.round((vw - cw) / 2), y: Math.round((vh - ch) / 2), w: cw, h: ch };
+}
+
+/* Desenha a marca d'água no canto inferior direito do frame (usada na foto e
+ * no vídeo do modo WebView; no modo nativo só é aplicada em fotos). */
+function drawWatermark(ctx, w, h) {
+  if (!state.watermarkOn) return;
+  const text = String(state.watermarkText || '').trim();
+  if (!text || !w || !h) return;
+  const fs = Math.max(12, Math.round(w * 0.04));
+  const pad = Math.round(w * 0.03);
+  ctx.save();
+  ctx.filter = 'none';
+  ctx.font = '700 ' + fs + 'px -apple-system, system-ui, "Segoe UI", Roboto, sans-serif';
+  ctx.textAlign = 'right';
+  ctx.textBaseline = 'bottom';
+  ctx.shadowColor = 'rgba(0,0,0,0.75)';
+  ctx.shadowBlur = Math.round(fs * 0.4);
+  ctx.globalAlpha = 0.92;
+  ctx.fillStyle = '#ffffff';
+  ctx.fillText(text, w - pad, h - pad);
+  ctx.restore();
 }
 
 function paint() {
@@ -658,6 +805,7 @@ function paint() {
   ctx.drawImage(video, x, y, w, h, 0, 0, w, h);
   ctx.restore();
   ctx.filter = 'none';
+  drawWatermark(ctx, w, h);
 }
 
 /* Preview visível via canvas (contorna WebViews onde o <video> não
@@ -780,6 +928,26 @@ async function stopNativePreview() {
   state.nativeMode = false;
 }
 
+/* Aplica a marca d'água a uma foto já capturada (modo nativo, onde o frame não
+ * passa pelo canvas de renderização). */
+async function applyWatermarkToBlob(blob) {
+  if (!state.watermarkOn || !blob) return blob;
+  if (!String(state.watermarkText || '').trim()) return blob;
+  try {
+    const img = await createImageBitmap(blob);
+    const c = document.createElement('canvas');
+    c.width = img.width;
+    c.height = img.height;
+    const cx = c.getContext('2d');
+    cx.drawImage(img, 0, 0);
+    drawWatermark(cx, c.width, c.height);
+    const out = await new Promise((resolve) => c.toBlob(resolve, 'image/jpeg', 0.92));
+    return out || blob;
+  } catch (_) {
+    return blob;
+  }
+}
+
 async function captureNativePhoto() {
   const p = camPrev();
   if (!p) return false;
@@ -790,7 +958,8 @@ async function captureNativePhoto() {
     const b64 = res && res.value ? String(res.value) : '';
     if (!b64) throw new Error('captura vazia');
     const dataUrl = b64.indexOf('data:') === 0 ? b64 : 'data:image/jpeg;base64,' + b64;
-    const blob = await (await fetch(dataUrl)).blob();
+    const raw = await (await fetch(dataUrl)).blob();
+    const blob = await applyWatermarkToBlob(raw);
     addToGallery({
       id: uid(),
       kind: 'photo',
@@ -2322,15 +2491,21 @@ function buildApp() {
     stage.appendChild(gridLine('h', '66.66%'));
   }
 
-  // foco/exposição por toque (apenas no preview via WebView)
+  // foco/exposição por toque e pinça p/ zoom (apenas no preview via WebView)
   if (!state.nativeMode) {
     bindTapToFocus(stage);
+    bindPinchZoom(stage);
     if (state.focusAt) {
       const ret = el('div', 'focus-reticle' + (state.exposureLocked ? ' locked' : ''));
       ret.style.left = (state.focusAt.x * 100).toFixed(2) + '%';
       ret.style.top = (state.focusAt.y * 100).toFixed(2) + '%';
       stage.appendChild(ret);
     }
+  }
+
+  // pré-visualização da marca d'água
+  if (state.watermarkOn && String(state.watermarkText || '').trim()) {
+    stage.appendChild(el('div', 'wm-overlay', String(state.watermarkText).replace(/</g, '&lt;')));
   }
 
   // hud superior (rec / pausar)
@@ -2394,6 +2569,7 @@ function buildApp() {
     const zb = el('div', 'zoombar');
     const zmin = el('span', '', '1×');
     const range = el('input');
+    range.id = 'zoom-range';
     range.type = 'range';
     range.min = state.zoomCap.min;
     range.max = state.zoomCap.max;
@@ -2401,9 +2577,12 @@ function buildApp() {
     range.value = state.zoom;
     range.addEventListener('input', () => applyZoom(Number(range.value)));
     const zmax = el('span', '', `${Math.round(state.zoomCap.max)}×`);
+    const zlabel = el('span', '', state.zoom.toFixed(1) + '×');
+    zlabel.id = 'zoom-label';
     zb.appendChild(zmin);
     zb.appendChild(range);
     zb.appendChild(zmax);
+    zb.appendChild(zlabel);
     app.appendChild(zb);
   }
 
@@ -2563,6 +2742,38 @@ function buildPanel() {
     opts.appendChild(setToggle('Grade de terços', state.grid, () => (state.grid = !state.grid, render()), () => state.nativeMode));
     opts.appendChild(setToggle('Espelho', state.mirror, () => (state.mirror = !state.mirror, render()), () => state.rec !== 'inactive' || state.nativeMode));
     opts.appendChild(setToggle('Som no vídeo', state.audioOn, () => (state.audioOn = !state.audioOn, render()), () => state.mode !== 'video' || state.rec !== 'inactive' || state.nativeMode));
+    opts.appendChild(setGroup('Marca d\u2019água'));
+    opts.appendChild(
+      setToggle('Marca d\u2019água', state.watermarkOn, () => (state.watermarkOn = !state.watermarkOn, render()), () => state.rec !== 'inactive'),
+    );
+    if (state.watermarkOn) {
+      const wmInput = el('input');
+      wmInput.type = 'text';
+      wmInput.value = state.watermarkText || '';
+      wmInput.placeholder = 'Texto da marca d\u2019água';
+      wmInput.maxLength = 40;
+      wmInput.style.cssText = inputStyle();
+      wmInput.addEventListener('input', () => {
+        state.watermarkText = wmInput.value;
+        savePrefs();
+      });
+      opts.appendChild(wmInput);
+      const wmHint = el('div', '', 'Aplicada no canto inferior direito. Em vídeos, vale no modo padrão (no modo nativo a câmera grava direto).');
+      wmHint.style.cssText = 'font-size:11px;opacity:.6;line-height:1.4;margin:2px 0 4px;';
+      opts.appendChild(wmHint);
+    }
+    opts.appendChild(setGroup('Desempenho'));
+    opts.appendChild(
+      setToggle('Câmera nativa', state.forceNative, () => {
+        state.forceNative = !state.forceNative;
+        startCamera();
+      }, () => state.rec !== 'inactive' || !camPrev()),
+    );
+    const natHint = el('div', '', camPrev()
+      ? 'Use se o preview travar ou ficar preto. Desativa filtros, proporção e zoom na prévia.'
+      : 'Indisponível neste aparelho.');
+    natHint.style.cssText = 'font-size:11px;opacity:.6;line-height:1.4;margin:2px 0 4px;';
+    opts.appendChild(natHint);
     opts.appendChild(setGroup('App'));
     opts.appendChild(setNav('Versão do app', state.appVersion || '…', () => {}, () => true));
     opts.appendChild(setNav('Verificar atualização', state.updateChecking ? 'Verificando…' : '', () => checkForUpdate(true), () => state.updateChecking));
@@ -2716,6 +2927,7 @@ function render() {
   const app = document.getElementById('app');
   app.innerHTML = '';
   buildApp();
+  savePrefs();
 }
 
 window.retry = () => {
@@ -2764,6 +2976,7 @@ document.addEventListener('DOMContentLoaded', () => {
   try {
     state.accountEmail = localStorage.getItem(USER_KEY);
   } catch (_) {}
+  loadPrefs();
   restoreGallery();
   startCamera();
 

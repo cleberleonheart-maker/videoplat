@@ -191,6 +191,23 @@ button:disabled {
   font-size: 16px;
 }
 
+/* pré-visualização da marca d'água (canto inferior direito) */
+.wm-overlay {
+  position: absolute;
+  right: 4%;
+  bottom: 4%;
+  z-index: 4;
+  max-width: 70%;
+  color: #fff;
+  font: 700 clamp(12px, 4vw, 22px) / 1.1 -apple-system, system-ui, 'Segoe UI', Roboto, sans-serif;
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.8);
+  opacity: 0.92;
+  pointer-events: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* seletor de capa no modal de publicação */
 .cover-thumb {
   width: 100%;
