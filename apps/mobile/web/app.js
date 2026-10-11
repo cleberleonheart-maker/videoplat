@@ -1322,6 +1322,11 @@ function setPanel(p) {
 /* ---------------- galeria: nativo vs fallback ---------------- */
 
 async function persistToCache(item, fileName) {
+  if (isNative && item.persistedPath) {
+    // Cópia nativa (sem base64) para não estourar memória com vídeos.
+    await core().NativeMedia.copyDataToCache({ path: item.persistedPath, fileName });
+    return fileName;
+  }
   const fs = core().Filesystem;
   const blob = await ensureBlob(item);
   if (!blob) throw new Error('arquivo indisponível');
@@ -1445,9 +1450,6 @@ async function refreshItemPlayableUrl(item) {
 
 /** Resolve uma URL reproduzível na WebView para um vídeo da galeria. */
 async function playableVideoUrl(item) {
-  try {
-    await ensureBlob(item);
-  } catch (_) {}
   await refreshItemPlayableUrl(item);
   return item.url;
 }
@@ -1465,10 +1467,40 @@ async function videoRotation(item) {
     item._rotation = res && res.rotation ? Number(res.rotation) : 0;
     item._rawW = res && res.width ? Number(res.width) : 0;
     item._rawH = res && res.height ? Number(res.height) : 0;
+    diag("native", {
+      path: item.persistedPath,
+      rotation: item._rotation,
+      rawW: item._rawW,
+      rawH: item._rawH,
+      cssAngle: cssAngle(item._rotation),
+    });
   } catch (_) {
     item._rotation = 0;
   }
   return item._rotation;
+}
+
+/**
+ * Converte a rotação lida do MP4 (metadado) para o ângulo de rotação do CSS.
+ * O metadado usa a convenção oposta à do CSS (ex.: 270 do MP4 = 90 no CSS),
+ * então invertemos o sinal. 0/90/180/270 -> 0/270/180/90.
+ */
+function cssAngle(rotation) {
+  const r = (((rotation || 0) % 360) + 360) % 360;
+  return (360 - r) % 360;
+}
+
+/* Diagnóstico: acumula e grava em /sdcard/Download/videoplat-diag.txt */
+const DIAG = { lines: [] };
+function diag(tag, obj) {
+  try {
+    if (!isNative) return;
+    DIAG.lines.push(tag + " " + JSON.stringify(obj));
+    const content = DIAG.lines.join("\n") + "\n";
+    if (core().NativeMedia && core().NativeMedia.writeSharedText) {
+      core().NativeMedia.writeSharedText({ name: "videoplat-diag.txt", content }).catch(() => {});
+    }
+  } catch (_) {}
 }
 
 /** Extrai um frame do vídeo como data URL (thumbnail), sem travar a UI. */
@@ -1491,7 +1523,7 @@ function captureVideoPoster(url, rotation, rawW, rawH) {
         const vw = vid.videoWidth;
         const vh = vid.videoHeight;
         if (!vw || !vh) return finish(null);
-        let rot = (((rotation || 0) % 360) + 360) % 360;
+        let rot = cssAngle(rotation);
         // Se a WebView já aplicou a rotação (90/270), as dimensões do elemento
         // ficam trocadas em relação às dimensões brutas — então não giramos de novo.
         if ((rot === 90 || rot === 270) && rawW && rawH) {
@@ -1535,21 +1567,29 @@ function ensureVideoPoster(item) {
   if (item.poster) return Promise.resolve(item.poster);
   if (item._posterPromise) return item._posterPromise;
   const p = (async () => {
-    let url = null;
+    let objectUrl = null;
     try {
-      // ensureBlob cobre blob (web), persistido e gravação nativa (srcPath),
-      // persistindo o arquivo quando necessário.
-      const blob = await ensureBlob(item);
-      if (!blob) return null;
+      // Para vídeos nativos usamos a URL do arquivo persistido direto no
+      // <video>; só criamos object URL para itens em memória (web).
+      let url = item.url;
+      if (isNative) {
+        if (item.srcPath && !item.persistedPath) await persistItem(item);
+        if (item.persistedPath) {
+          await refreshItemPlayableUrl(item);
+          url = item.url;
+        }
+      } else if (item.blob && !url) {
+        url = objectUrl = URL.createObjectURL(item.blob);
+      }
+      if (!url) return null;
       const rotation = await videoRotation(item);
-      url = URL.createObjectURL(blob);
       const poster = await captureVideoPoster(url, rotation, item._rawW, item._rawH);
       if (poster) item.poster = poster;
       return poster;
     } catch (_) {
       return null;
     } finally {
-      if (url) URL.revokeObjectURL(url);
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
     }
   })();
   item._posterPromise = p;
@@ -1693,12 +1733,20 @@ async function restoreGallery() {
 
 async function ensureBlob(item) {
   if (item.blob) return item.blob;
-  if (isNative && item.srcPath && !item.persistedPath) {
-    await persistItem(item);
-  }
-  if (item.persistedPath) {
-    const base64 = await readDataFile(item.persistedPath);
-    return base64ToBlob(base64, item.mime);
+  if (isNative) {
+    if (item.srcPath && !item.persistedPath) {
+      await persistItem(item);
+    }
+    if (item.persistedPath) {
+      // Lê o arquivo via fetch (streaming) em vez de Filesystem.readFile, que
+      // devolve base64 e, para vídeos, estoura a memória (OOM).
+      await refreshItemPlayableUrl(item);
+      if (item.url) {
+        const res = await fetch(item.url);
+        return await res.blob();
+      }
+    }
+    return null;
   }
   return null;
 }
@@ -2926,7 +2974,7 @@ function buildPreviewModal(item) {
               video.src = u;
               if (!rotation) return;
               const apply = () => {
-                let deg = rotation;
+                let deg = cssAngle(rotation);
                 // Se a WebView já aplicou 90/270, as dimensões exibidas ficam
                 // trocadas em relação às brutas — então não giramos de novo.
                 if (
@@ -2940,6 +2988,14 @@ function buildPreviewModal(item) {
                   deg = 0;
                 }
                 if (deg) video.style.transform = `rotate(${deg}deg)`;
+                diag("preview", {
+                  rot: rotation,
+                  deg: deg,
+                  rawW: item._rawW,
+                  rawH: item._rawH,
+                  vw: video.videoWidth,
+                  vh: video.videoHeight,
+                });
               };
               if (video.readyState >= 1) apply();
               else video.addEventListener('loadedmetadata', apply, { once: true });

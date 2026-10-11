@@ -130,6 +130,49 @@ public class NativeMediaPlugin extends Plugin {
     }
 
     /**
+     * Copia um arquivo persistido (Directory.Data) para o cache (Directory.Cache)
+     * direto no lado nativo, sem passar o conteúdo pela WebView — evita estourar
+     * memória (OOM) ao salvar/compartilhar vídeos grandes.
+     */
+    @PluginMethod
+    public void copyDataToCache(PluginCall call) {
+        String path = call.getString("path");
+        String fileName = call.getString("fileName");
+        if (path == null || path.isEmpty()) {
+            call.reject("path obrigatório");
+            return;
+        }
+        File src = new File(getContext().getFilesDir(), path.replaceFirst("^/+", ""));
+        if (!src.exists() || !src.isFile()) {
+            call.reject("Arquivo não encontrado: " + src.getAbsolutePath());
+            return;
+        }
+        if (fileName == null || fileName.isEmpty()) {
+            fileName = src.getName();
+        }
+        File dir = new File(getContext().getCacheDir(), "capturas");
+        if (!dir.exists() && !dir.mkdirs()) {
+            call.reject("Não foi possível criar a pasta de cache");
+            return;
+        }
+        File dest = new File(dir, fileName);
+        try (FileInputStream in = new FileInputStream(src);
+             OutputStream out = new FileOutputStream(dest)) {
+            byte[] buf = new byte[64 * 1024];
+            int n;
+            while ((n = in.read(buf)) > 0) {
+                out.write(buf, 0, n);
+            }
+        } catch (IOException ex) {
+            call.reject("Falha ao copiar para o cache: " + ex.getMessage(), ex);
+            return;
+        }
+        JSObject ret = new JSObject();
+        ret.put("path", "capturas/" + fileName);
+        call.resolve(ret);
+    }
+
+    /**
      * Lê a rotação (metadado do MP4) e as dimensões brutas de um vídeo. A WebView
      * do Android nem sempre aplica essa rotação ao reproduzir, então o app usa o
      * valor para girar o vídeo e a miniatura corretamente.
@@ -171,6 +214,59 @@ public class NativeMediaPlugin extends Plugin {
                 retriever.release();
             } catch (Exception ignored) {
             }
+        }
+    }
+
+    /**
+     * Escreve um arquivo de texto em Downloads/ (pasta pública) para diagnóstico.
+     * Sobrescreve o arquivo a cada chamada.
+     */
+    @PluginMethod
+    public void writeSharedText(PluginCall call) {
+        String name = call.getString("name", "videoplat-diag.txt");
+        String content = call.getString("content", "");
+        Activity activity = getActivity();
+        if (activity == null) {
+            call.reject("Sem activity");
+            return;
+        }
+        try {
+            byte[] bytes = content.getBytes("UTF-8");
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                ContentValues values = new ContentValues();
+                values.put(MediaStore.MediaColumns.DISPLAY_NAME, name);
+                values.put(MediaStore.MediaColumns.MIME_TYPE, "text/plain");
+                values.put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS);
+                values.put(MediaStore.MediaColumns.IS_PENDING, 1);
+                Uri uri = activity.getContentResolver().insert(
+                        MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
+                if (uri == null) {
+                    call.reject("Falha ao criar arquivo em Download");
+                    return;
+                }
+                OutputStream out = activity.getContentResolver().openOutputStream(uri);
+                if (out != null) {
+                    out.write(bytes);
+                    out.close();
+                }
+                ContentValues done = new ContentValues();
+                done.put(MediaStore.MediaColumns.IS_PENDING, 0);
+                activity.getContentResolver().update(uri, done, null, null);
+                JSObject ret = new JSObject();
+                ret.put("uri", uri.toString());
+                call.resolve(ret);
+            } else {
+                File dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
+                File out = new File(dir, name);
+                try (FileOutputStream fos = new FileOutputStream(out)) {
+                    fos.write(bytes);
+                }
+                JSObject ret = new JSObject();
+                ret.put("path", out.getAbsolutePath());
+                call.resolve(ret);
+            }
+        } catch (IOException ex) {
+            call.reject("Falha ao escrever diagnóstico: " + ex.getMessage(), ex);
         }
     }
 
