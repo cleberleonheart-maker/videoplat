@@ -108,14 +108,15 @@ const handleZoom = `private void handleZoom(MotionEvent event, Camera.Parameters
                     }
                 }`;
 
-// BUG de orientação: no ramo da câmera frontal, a compensação de espelho só era
-// aplicada quando `degrees != 0`. Em retrato (degrees == 0) o hint saía com 180°
-// errados (ex.: 270 em vez de 90), deixando a selfie de cabeça pra baixo tanto no
-// app quanto na galeria. Removemos a condição para aplicá-la sempre.
+// BUG de orientação: calculateOrientationHint() lia a câmera em `defaultCameraId`,
+// que NÃO é atualizado por switchCamera() (só `cameraCurrentlyLocked` é). Então,
+// depois de virar para a frontal (selfie), o hint era calculado com os dados da
+// câmera TRASEIRA -> ramo traseiro -> 90°, e a selfie saía de cabeça pra baixo.
+// Passamos a usar `cameraCurrentlyLocked` (a câmera realmente ativa).
 const calculateOrientationHint = `public int calculateOrientationHint() {
         DisplayMetrics dm = new DisplayMetrics();
         Camera.CameraInfo info = new Camera.CameraInfo();
-        Camera.getCameraInfo(defaultCameraId, info);
+        Camera.getCameraInfo(cameraCurrentlyLocked, info);
         int cameraRotationOffset = info.orientation;
         Activity activity = getActivity();
 

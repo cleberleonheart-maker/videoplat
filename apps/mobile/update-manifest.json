@@ -1,7 +1,7 @@
 {
-  "version": "2.4",
-  "versionCode": 15,
+  "version": "2.5",
+  "versionCode": 16,
   "apkUrl": "https://github.com/cleberleonheart-maker/videoplat/releases/latest/download/CameraVideoPlat-release.apk",
-  "notes": "Preview da câmera ocupando a tela inteira e botões de gravar/foto e trocar câmera movidos para a parte de baixo da tela. Também inclui a correção de rotação da câmera frontal e a atualização pelo próprio app.",
+  "notes": "Corrige a selfie de cabeça para baixo: a orientação agora usa a câmera realmente ativa (antes, ao trocar para a frontal, usava os dados da traseira). Também: preview em tela cheia, botões de foto/gravação e troca de câmera na parte de baixo e atualização pelo próprio app.",
   "publishedAt": "2026-10-12"
 }
