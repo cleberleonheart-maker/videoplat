@@ -1,7 +1,7 @@
 {
-  "version": "2.6",
-  "versionCode": 17,
+  "version": "2.7",
+  "versionCode": 18,
   "apkUrl": "https://github.com/cleberleonheart-maker/videoplat/releases/latest/download/CameraVideoPlat-release.apk",
-  "notes": "Modo WebView: detecta preview preto/congelado (bug do WebView em alguns aparelhos) e troca automaticamente para a camera nativa, sem ficar reiniciando. Tambem: correcao da selfie de cabeca para baixo, preview em tela cheia, botoes na parte de baixo e atualizacao pelo proprio app.",
+  "notes": "Modo WebView: evita abertura dupla da câmera nativa quando ocorre fallback simultâneo (no-frames + monitor) e persiste o fallback para nativo quando o preview do WebView fica preto/congelado.",
   "publishedAt": "2026-10-12"
 }

@@ -440,10 +440,18 @@ async function enumerateDevices() {
 async function useNativeFallback(reason) {
   diag('fallback', { reason: reason || '', forceNative: state.forceNative });
   if (!camPrev()) return false;
+  if (state.nativeMode) return true; // já está no nativo
+  if (state._switchNative) return true; // já em andamento: evita abrir 2x
+  state._switchNative = true;
   const already = state.forceNative;
   state.forceNative = true;
   savePrefs();
-  const ok = await startNativePreview();
+  let ok = false;
+  try {
+    ok = await startNativePreview();
+  } finally {
+    state._switchNative = false;
+  }
   if (ok) {
     state.starting = false;
     if (!already && !state.toast) {
