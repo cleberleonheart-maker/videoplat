@@ -181,6 +181,7 @@ const state = {
   updateInfo: null,
   updateVisible: false,
   updateChecking: false,
+  updateDownloading: false,
 };
 
 const v = {
@@ -2501,12 +2502,38 @@ function dismissUpdate() {
 async function downloadUpdate() {
   const man = state.updateInfo;
   if (!man || !man.apkUrl) return;
-  try {
-    if (isNative && core().NativeMedia && core().NativeMedia.openExternal) {
-      await core().NativeMedia.openExternal({ url: man.apkUrl });
-      return;
+  if (state.updateDownloading) return;
+  const native = isNative && core().NativeMedia;
+  if (native && native.downloadAndInstall) {
+    state.updateDownloading = true;
+    render();
+    try {
+      await native.downloadAndInstall({ url: man.apkUrl });
+      state.updateDownloading = false;
+      state.updateVisible = false;
+      render();
+    } catch (e) {
+      state.updateDownloading = false;
+      render();
+      const msg = String((e && (e.message || e.errorMessage)) || e);
+      if (msg.indexOf('PERMISSAO_INSTALAR') !== -1) {
+        try {
+          await native.openInstallSettings();
+        } catch (_) {}
+        window.alert(
+          'Para atualizar pelo próprio app, permita "Instalar apps desconhecidos" para a Câmera VideoPlat e toque em Atualizar de novo.',
+        );
+      } else {
+        window.alert('Não foi possível atualizar automaticamente. Abrindo o download no navegador…');
+        try {
+          await native.openExternal({ url: man.apkUrl });
+        } catch (_) {
+          window.open(man.apkUrl, '_blank');
+        }
+      }
     }
-  } catch (_) {}
+    return;
+  }
   window.open(man.apkUrl, '_blank');
 }
 
@@ -2517,7 +2544,8 @@ function buildUpdateBanner() {
   txt.appendChild(el('div', 'ub-head', '⬆ Nova versão ' + String(man.version || '') + ' disponível'));
   if (man.notes) txt.appendChild(el('div', 'ub-notes', String(man.notes).replace(/</g, '&lt;')));
   bar.appendChild(txt);
-  const dl = el('button', 'ub-btn', 'Baixar');
+  const dl = el('button', 'ub-btn', state.updateDownloading ? 'Baixando…' : 'Atualizar');
+  dl.disabled = !!state.updateDownloading;
   dl.addEventListener('click', downloadUpdate);
   const later = el('button', 'ub-btn ghost', 'Depois');
   later.addEventListener('click', dismissUpdate);

@@ -1,7 +1,7 @@
 {
-  "version": "2.2",
-  "versionCode": 13,
+  "version": "2.3",
+  "versionCode": 14,
   "apkUrl": "https://github.com/cleberleonheart-maker/videoplat/releases/latest/download/CameraVideoPlat-release.apk",
-  "notes": "Corrige de verdade a rotação da câmera frontal: o arquivo gravado não é espelhado, então usa a rotação do sensor sem compensação (evitava 180° a mais).",
+  "notes": "Atualização pelo próprio app: baixa e instala sem abrir o navegador. Também inclui a correção de rotação da câmera frontal.",
   "publishedAt": "2026-10-12"
 }

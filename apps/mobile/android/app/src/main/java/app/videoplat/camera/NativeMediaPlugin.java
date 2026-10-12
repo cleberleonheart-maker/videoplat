@@ -8,6 +8,7 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.Environment;
 import android.provider.MediaStore;
+import android.provider.Settings;
 
 import com.getcapacitor.JSObject;
 import com.getcapacitor.Plugin;
@@ -19,7 +20,12 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.OutputStream;
+import java.net.HttpURLConnection;
+import java.net.URL;
+
+import androidx.core.content.FileProvider;
 
 /**
  * Salva arquivos que já estão no cache do app (gravados via @capacitor/filesystem)
@@ -332,6 +338,117 @@ public class NativeMediaPlugin extends Plugin {
         } catch (Exception ex) {
             call.reject("Falha ao escrever PNG: " + ex.getMessage(), ex);
         }
+    }
+
+    /**
+     * Verifica se o app tem permissão para instalar APKs (Android O+).
+     */
+    @PluginMethod
+    public void canInstallApk(PluginCall call) {
+        JSObject ret = new JSObject();
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            Activity activity = getActivity();
+            boolean ok = activity != null
+                    && activity.getPackageManager().canRequestPackageInstalls();
+            ret.put("value", ok);
+        } else {
+            ret.put("value", true);
+        }
+        call.resolve(ret);
+    }
+
+    /**
+     * Abre a tela de configuração para permitir instalar apps desconhecidos.
+     */
+    @PluginMethod
+    public void openInstallSettings(PluginCall call) {
+        Activity activity = getActivity();
+        if (activity == null) {
+            call.reject("Sem activity");
+            return;
+        }
+        try {
+            Intent intent = new Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES);
+            intent.setData(Uri.parse("package:" + activity.getPackageName()));
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            activity.startActivity(intent);
+            call.resolve();
+        } catch (Exception ex) {
+            call.reject("Não foi possível abrir as configurações: " + ex.getMessage(), ex);
+        }
+    }
+
+    /**
+     * Baixa um APK (em thread separada) e abre o instalador do sistema via
+     * FileProvider — sem passar pelo navegador.
+     */
+    @PluginMethod
+    public void downloadAndInstall(final PluginCall call) {
+        final String url = call.getString("url");
+        final Activity activity = getActivity();
+        if (url == null || url.isEmpty()) {
+            call.reject("url obrigatório");
+            return;
+        }
+        if (activity == null) {
+            call.reject("Sem activity");
+            return;
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
+                && !activity.getPackageManager().canRequestPackageInstalls()) {
+            call.reject("PERMISSAO_INSTALAR");
+            return;
+        }
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                HttpURLConnection conn = null;
+                try {
+                    File dir = new File(activity.getCacheDir(), "update");
+                    if (!dir.exists()) {
+                        dir.mkdirs();
+                    }
+                    File out = new File(dir, "videoplat-update.apk");
+                    conn = (HttpURLConnection) new URL(url).openConnection();
+                    conn.setInstanceFollowRedirects(true);
+                    conn.setConnectTimeout(20000);
+                    conn.setReadTimeout(120000);
+                    conn.connect();
+                    int code = conn.getResponseCode();
+                    if (code >= 400) {
+                        call.reject("Download falhou: HTTP " + code);
+                        return;
+                    }
+                    InputStream in = conn.getInputStream();
+                    FileOutputStream fos = new FileOutputStream(out);
+                    byte[] buf = new byte[64 * 1024];
+                    int n;
+                    long total = 0;
+                    while ((n = in.read(buf)) > 0) {
+                        fos.write(buf, 0, n);
+                        total += n;
+                    }
+                    fos.close();
+                    in.close();
+                    final Uri apkUri = FileProvider.getUriForFile(
+                            activity, activity.getPackageName() + ".fileprovider", out);
+                    Intent intent = new Intent(Intent.ACTION_VIEW);
+                    intent.setDataAndType(apkUri, "application/vnd.android.package-archive");
+                    intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION
+                            | Intent.FLAG_ACTIVITY_NEW_TASK);
+                    activity.startActivity(intent);
+                    JSObject ret = new JSObject();
+                    ret.put("size", total);
+                    call.resolve(ret);
+                } catch (final Exception ex) {
+                    call.reject("Falha ao baixar/instalar: " + ex.getMessage(), ex);
+                } finally {
+                    if (conn != null) {
+                        conn.disconnect();
+                    }
+                }
+            }
+        }).start();
     }
 
     /**
