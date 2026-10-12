@@ -1,7 +1,7 @@
 {
-  "version": "2.5",
-  "versionCode": 16,
+  "version": "2.6",
+  "versionCode": 17,
   "apkUrl": "https://github.com/cleberleonheart-maker/videoplat/releases/latest/download/CameraVideoPlat-release.apk",
-  "notes": "Corrige a selfie de cabeça para baixo: a orientação agora usa a câmera realmente ativa (antes, ao trocar para a frontal, usava os dados da traseira). Também: preview em tela cheia, botões de foto/gravação e troca de câmera na parte de baixo e atualização pelo próprio app.",
+  "notes": "Modo WebView: detecta preview preto/congelado (bug do WebView em alguns aparelhos) e troca automaticamente para a camera nativa, sem ficar reiniciando. Tambem: correcao da selfie de cabeca para baixo, preview em tela cheia, botoes na parte de baixo e atualizacao pelo proprio app.",
   "publishedAt": "2026-10-12"
 }

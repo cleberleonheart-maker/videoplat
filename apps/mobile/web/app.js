@@ -433,7 +433,29 @@ async function enumerateDevices() {
   render();
 }
 
+/* Cai para o preview nativo (CameraPreview) de forma definitiva: liga a
+ * preferência "Câmera nativa" e persiste, para não voltar a tentar o WebView
+ * quebrado a cada abertura. Usado quando o preview do WebView não entrega
+ * imagem (bug MediaTek/Chromium). */
+async function useNativeFallback(reason) {
+  diag('fallback', { reason: reason || '', forceNative: state.forceNative });
+  if (!camPrev()) return false;
+  const already = state.forceNative;
+  state.forceNative = true;
+  savePrefs();
+  const ok = await startNativePreview();
+  if (ok) {
+    state.starting = false;
+    if (!already && !state.toast) {
+      state.toast = { ok: true, msg: 'O preview da WebView não funciona neste aparelho. Ativamos a câmera nativa.' };
+      render();
+    }
+  }
+  return ok;
+}
+
 async function startCamera(opts = {}) {
+  diag('cam', { forceNative: state.forceNative, nativeMode: state.nativeMode, hasCamPrev: !!camPrev(), facing: state.facing });
   if (state.nativeMode) {
     // Já em modo nativo: só continua se o usuário acabou de desligar a opção.
     if (!state.forceNative) {
@@ -491,10 +513,8 @@ async function startCamera(opts = {}) {
       await sleep(400);
     }
     if (!stream) {
-      if (camPrev()) {
-        const okNative = await startNativePreview();
-        if (okNative) return;
-      }
+      diag('gum-fail', { msg: lastErr && lastErr.message ? lastErr.message : String(lastErr) });
+      if (await useNativeFallback('gum-fail')) return;
       if (lastErr) throw lastErr;
       throw new Error(
         'A câmera abriu mas nenhuma imagem chegou ao app no seu WebView. ' +
@@ -507,6 +527,7 @@ async function startCamera(opts = {}) {
     const video = v.video;
     const track = stream.getVideoTracks()[0];
     const settings = typeof track.getSettings === 'function' ? track.getSettings() : {};
+    diag('gum-ok', { w: settings.width || 0, h: settings.height || 0, label: (track.label || '').slice(0, 40) });
     state.streamInfo = { width: settings.width || 0, height: settings.height || 0 };
     if (settings.width && settings.height) state.freeRatio = settings.width / settings.height;
 
@@ -525,13 +546,14 @@ async function startCamera(opts = {}) {
     if (camPrev() && totalVideoFramesOf(v.video) === 0) {
       /* WebView não entregou frame nenhum (bug MediaTek/Chromium):
        * muda para o preview nativo (CameraPreview). */
+      diag('no-frames', { frames: totalVideoFramesOf(v.video) });
       await sleep(1600);
-      if (totalVideoFramesOf(v.video) === 0) {
-        const okNative = await startNativePreview();
-        if (okNative) return;
+      if (totalVideoFramesOf(v.video) === 0 || videoFrameBlank()) {
+        if (await useNativeFallback('no-frames')) return;
       }
     }
   } catch (err) {
+    diag('camera-err', { msg: err && err.message ? err.message : String(err) });
     state.error = err && err.message ? err.message : 'Não foi possível acessar a câmera';
     state.ready = false;
     state.starting = false;
@@ -539,33 +561,54 @@ async function startCamera(opts = {}) {
   render();
 }
 
-/* monitor de frames: se o preview congelar (WebView bugado),
- * tenta recuperar recarregando a câmera automaticamente (no máx. 3x). */
+/* Detector de frame preto: o bug do WebView MediaTek entrega um stream e
+ * "frames" que avançam, mas a imagem sai preta. Amostramos o <video> num canvas
+ * minúsculo; se ficar quase todo preto, consideramos o preview quebrado. */
+function videoFrameBlank() {
+  const video = v.video;
+  if (!video || !video.videoWidth || !video.videoHeight) return true;
+  try {
+    const c = document.createElement('canvas');
+    c.width = 16;
+    c.height = 16;
+    const cx = c.getContext('2d', { willReadFrequently: true });
+    cx.drawImage(video, 0, 0, 16, 16);
+    const d = cx.getImageData(0, 0, 16, 16).data;
+    let sum = 0;
+    for (let i = 0; i < d.length; i += 4) sum += d[i] + d[i + 1] + d[i + 2];
+    return sum / ((d.length / 4) * 3) < 6;
+  } catch (_) {
+    return false;
+  }
+}
+
+/* monitor de frames: se o preview congelar OU sair preto (WebView bugado),
+ * cai de vez para a câmera nativa (persistente) em vez de ficar reiniciando. */
 setInterval(() => {
   if (!state.ready || state.rec !== 'inactive' || state.starting || state.nativeMode || !v.video) return;
+  if (state._fallingBack) return;
   const frames = totalVideoFramesOf(v.video);
-  if (frames < 0) return;
-  if (state._lastFrames !== undefined && frames === state._lastFrames) {
-    if (state._recoveries >= 3) {
-      state._recoveries = 0;
-      state.error =
-        'O preview da câmera travou no WebView deste aparelho. Atualize o "Android System WebView" na Play Store e toque em "Tentar novamente".';
-      state.ready = false;
-      state.starting = false;
-      render();
-      return;
-    }
-    if (!state._recovering) {
-      state._recovering = true;
-      state._recoveries += 1;
-      setTimeout(() => {
-        state._recovering = false;
-      }, 15000);
-      startCamera();
+  let why = '';
+  if (frames >= 0) {
+    if (state._lastFrames !== undefined && frames === state._lastFrames) why = 'freeze';
+    state._lastFrames = frames;
+  }
+  if (!why) {
+    if (videoFrameBlank()) {
+      state._blankStrikes = (state._blankStrikes || 0) + 1;
+      if (state._blankStrikes >= 2) why = 'blank';
+    } else {
+      state._blankStrikes = 0;
     }
   }
-  state._lastFrames = frames;
-}, 5000);
+  if (why) {
+    diag('monitor', { why, frames });
+    state._fallingBack = true;
+    useNativeFallback(why).finally(() => {
+      state._fallingBack = false;
+    });
+  }
+}, 4000);
 
 function clampZoom(value) {
   return Math.min(Math.max(value, state.zoomCap.min), state.zoomCap.max);
