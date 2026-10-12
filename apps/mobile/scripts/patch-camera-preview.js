@@ -108,8 +108,51 @@ const handleZoom = `private void handleZoom(MotionEvent event, Camera.Parameters
                     }
                 }`;
 
+// BUG de orientação: no ramo da câmera frontal, a compensação de espelho só era
+// aplicada quando `degrees != 0`. Em retrato (degrees == 0) o hint saía com 180°
+// errados (ex.: 270 em vez de 90), deixando a selfie de cabeça pra baixo tanto no
+// app quanto na galeria. Removemos a condição para aplicá-la sempre.
+const calculateOrientationHint = `public int calculateOrientationHint() {
+        DisplayMetrics dm = new DisplayMetrics();
+        Camera.CameraInfo info = new Camera.CameraInfo();
+        Camera.getCameraInfo(defaultCameraId, info);
+        int cameraRotationOffset = info.orientation;
+        Activity activity = getActivity();
+
+        activity.getWindowManager().getDefaultDisplay().getMetrics(dm);
+        int currentScreenRotation = activity.getWindowManager().getDefaultDisplay().getRotation();
+
+        int degrees = 0;
+        switch (currentScreenRotation) {
+            case Surface.ROTATION_0:
+                degrees = 0;
+                break;
+            case Surface.ROTATION_90:
+                degrees = 90;
+                break;
+            case Surface.ROTATION_180:
+                degrees = 180;
+                break;
+            case Surface.ROTATION_270:
+                degrees = 270;
+                break;
+        }
+
+        int orientation;
+        if (info.facing == Camera.CameraInfo.CAMERA_FACING_FRONT) {
+            orientation = (cameraRotationOffset + degrees) % 360;
+            orientation = (360 - orientation) % 360;
+        } else {
+            orientation = (cameraRotationOffset - degrees + 360) % 360;
+        }
+        Log.w(TAG, "************orientationHint ***********= " + orientation);
+
+        return orientation;
+    }`;
+
 src = replaceMethod(src, "public void setFocusArea(", setFocusArea);
 src = replaceMethod(src, "private void handleZoom(", handleZoom);
+src = replaceMethod(src, "public int calculateOrientationHint(", calculateOrientationHint);
 
 if (src === before) {
   console.log("[patch-camera-preview] já aplicado");
