@@ -1481,13 +1481,13 @@ async function videoRotation(item) {
 }
 
 /**
- * Converte a rotação lida do MP4 (metadado) para o ângulo de rotação do CSS.
- * O metadado usa a convenção oposta à do CSS (ex.: 270 do MP4 = 90 no CSS),
- * então invertemos o sinal. 0/90/180/270 -> 0/270/180/90.
+ * Ângulo de rotação (em graus, horário) para corrigir a orientação no app.
+ * O metadado do MP4 já é o ângulo a girar no sentido horário (ex.: 90), o mesmo
+ * usado pelo CSS. A WebView do Android não aplica esse metadado ao exibir os
+ * vídeos, então somos nós que giramos.
  */
 function cssAngle(rotation) {
-  const r = (((rotation || 0) % 360) + 360) % 360;
-  return (360 - r) % 360;
+  return (((rotation || 0) % 360) + 360) % 360;
 }
 
 /* Diagnóstico: acumula e grava em /sdcard/Download/videoplat-diag.txt */
@@ -1524,11 +1524,7 @@ function captureVideoPoster(url, rotation, rawW, rawH) {
         const vh = vid.videoHeight;
         if (!vw || !vh) return finish(null);
         let rot = cssAngle(rotation);
-        // Se a WebView já aplicou a rotação (90/270), as dimensões do elemento
-        // ficam trocadas em relação às dimensões brutas — então não giramos de novo.
-        if ((rot === 90 || rot === 270) && rawW && rawH) {
-          if (Math.abs(vw / vh - rawW / rawH) > 0.02) rot = 0;
-        }
+        diag("poster", { rotation: rotation, rot: rot, rawW: rawW, rawH: rawH, vw: vw, vh: vh });
         const swap = rot === 90 || rot === 270;
         const dispW = swap ? vh : vw;
         const dispH = swap ? vw : vh;
@@ -2974,19 +2970,7 @@ function buildPreviewModal(item) {
               video.src = u;
               if (!rotation) return;
               const apply = () => {
-                let deg = cssAngle(rotation);
-                // Se a WebView já aplicou 90/270, as dimensões exibidas ficam
-                // trocadas em relação às brutas — então não giramos de novo.
-                if (
-                  (deg === 90 || deg === 270) &&
-                  item._rawW &&
-                  item._rawH &&
-                  video.videoWidth &&
-                  video.videoHeight &&
-                  Math.abs(video.videoWidth / video.videoHeight - item._rawW / item._rawH) > 0.02
-                ) {
-                  deg = 0;
-                }
+                const deg = cssAngle(rotation);
                 if (deg) video.style.transform = `rotate(${deg}deg)`;
                 diag("preview", {
                   rot: rotation,

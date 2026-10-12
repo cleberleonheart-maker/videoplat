@@ -1,7 +1,7 @@
 {
-  "version": "1.6",
-  "versionCode": 7,
+  "version": "1.7",
+  "versionCode": 8,
   "apkUrl": "https://github.com/cleberleonheart-maker/videoplat/releases/latest/download/CameraVideoPlat-release.apk",
-  "notes": "Correção definitiva da orientação: os vídeos de selfie apareciam de cabeça pra baixo por causa da convenção da rotação do MP4. Agora o app gira no sentido correto.",
-  "publishedAt": "2026-10-11"
+  "notes": "Orientação dos vídeos: aplica o ângulo de rotação direto (90°) e sempre gira, já que a WebView não aplica o metadado sozinha.",
+  "publishedAt": "2026-10-12"
 }
