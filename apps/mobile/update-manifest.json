@@ -1,7 +1,7 @@
 {
-  "version": "2.1",
-  "versionCode": 12,
+  "version": "2.2",
+  "versionCode": 13,
   "apkUrl": "https://github.com/cleberleonheart-maker/videoplat/releases/latest/download/CameraVideoPlat-release.apk",
-  "notes": "Corrige o metadado de rotação da câmera frontal: a compensação de espelho agora é sempre aplicada, evitando selfie gravada de cabeça pra baixo (às vezes) na galeria e no app.",
+  "notes": "Corrige de verdade a rotação da câmera frontal: o arquivo gravado não é espelhado, então usa a rotação do sensor sem compensação (evitava 180° a mais).",
   "publishedAt": "2026-10-12"
 }

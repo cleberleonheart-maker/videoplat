@@ -140,8 +140,11 @@ const calculateOrientationHint = `public int calculateOrientationHint() {
 
         int orientation;
         if (info.facing == Camera.CameraInfo.CAMERA_FACING_FRONT) {
+            // O arquivo gravado NÃO é espelhado; só o preview é. Portanto o vídeo
+            // deve usar a rotação do sensor sem compensação de espelho. A versão
+            // original aplicava uma compensação quando degrees != 0, o que girava
+            // o vídeo 180° errado (selfie de cabeça pra baixo).
             orientation = (cameraRotationOffset + degrees) % 360;
-            orientation = (360 - orientation) % 360;
         } else {
             orientation = (cameraRotationOffset - degrees + 360) % 360;
         }
