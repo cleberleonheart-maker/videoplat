@@ -1106,8 +1106,10 @@ async function nativeTorch() {
     if (!list.length) throw new Error('flash indisponível');
     const has = list.indexOf('torch') >= 0;
     if (!has) throw new Error('lanterna indisponível');
-    await p.setFlashMode(state.torch ? 'off' : 'torch');
-    state.torch = !state.torch;
+    const desired = state.torch ? 'off' : 'torch';
+    const m = await p.setFlashMode({ flashMode: desired });
+    if (m && m.error) throw new Error(m.error);
+    state.torch = desired === 'torch';
     render();
   } catch (e) {
     state.toast = { ok: false, msg: 'Lanterna: ' + (e && e.message ? e.message : e) };
