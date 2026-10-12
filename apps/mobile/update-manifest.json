@@ -1,7 +1,7 @@
 {
-  "version": "1.7",
-  "versionCode": 8,
+  "version": "1.8",
+  "versionCode": 9,
   "apkUrl": "https://github.com/cleberleonheart-maker/videoplat/releases/latest/download/CameraVideoPlat-release.apk",
-  "notes": "Orientação dos vídeos: aplica o ângulo de rotação direto (90°) e sempre gira, já que a WebView não aplica o metadado sozinha.",
+  "notes": "Corrige pane ao gravar diagnóstico e grava quadros de teste de orientação (vplot_*) em Downloads para acertar o ângulo final.",
   "publishedAt": "2026-10-12"
 }

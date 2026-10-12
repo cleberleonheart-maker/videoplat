@@ -1492,6 +1492,8 @@ function cssAngle(rotation) {
 
 /* Diagnóstico: acumula e grava em /sdcard/Download/videoplat-diag.txt */
 const DIAG = { lines: [] };
+let ORIENT_DIAG = true; // temporário: salva quadros de teste de orientação
+
 function diag(tag, obj) {
   try {
     if (!isNative) return;
@@ -1539,6 +1541,28 @@ function captureVideoPoster(url, rotation, rawW, rawH) {
         const dw = swap ? ch : cw;
         const dh = swap ? cw : ch;
         cx.drawImage(vid, -dw / 2, -dh / 2, dw, dh);
+        if (ORIENT_DIAG) {
+          try {
+            const seq = (window.__vpSeq = (window.__vpSeq || 0) + 1);
+            ['0', '90', '180', '270'].forEach((d) => {
+              const dg = Number(d);
+              const s = dg === 90 || dg === 270;
+              const dc = document.createElement('canvas');
+              dc.width = s ? vh : vw;
+              dc.height = s ? vw : vh;
+              const dcx = dc.getContext('2d');
+              dcx.translate(dc.width / 2, dc.height / 2);
+              dcx.rotate((dg * Math.PI) / 180);
+              dcx.drawImage(vid, -(s ? vh : vw) / 2, -(s ? vw : vh) / 2, s ? vh : vw, s ? vw : vh);
+              const b64 = dc.toDataURL('image/png').split(',')[1];
+              if (core().NativeMedia && core().NativeMedia.writePng) {
+                core()
+                  .NativeMedia.writePng({ name: 'vplot_' + d + '_' + seq + '.png', data: b64 })
+                  .catch(() => {});
+              }
+            });
+          } catch (_) {}
+        }
         finish(c.toDataURL('image/jpeg', 0.6));
       } catch (_) {
         finish(null);

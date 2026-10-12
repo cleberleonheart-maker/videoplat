@@ -233,6 +233,14 @@ public class NativeMediaPlugin extends Plugin {
         try {
             byte[] bytes = content.getBytes("UTF-8");
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                // Remove versões anteriores (mesmo nome) para poder sobrescrever.
+                try {
+                    activity.getContentResolver().delete(
+                            MediaStore.Downloads.EXTERNAL_CONTENT_URI,
+                            MediaStore.MediaColumns.DISPLAY_NAME + "=?",
+                            new String[] { name });
+                } catch (Exception ignored) {
+                }
                 ContentValues values = new ContentValues();
                 values.put(MediaStore.MediaColumns.DISPLAY_NAME, name);
                 values.put(MediaStore.MediaColumns.MIME_TYPE, "text/plain");
@@ -265,8 +273,64 @@ public class NativeMediaPlugin extends Plugin {
                 ret.put("path", out.getAbsolutePath());
                 call.resolve(ret);
             }
-        } catch (IOException ex) {
+        } catch (Exception ex) {
             call.reject("Falha ao escrever diagnóstico: " + ex.getMessage(), ex);
+        }
+    }
+
+    /**
+     * Grava um arquivo binário (base64) em Downloads/ sobrescrevendo o nome.
+     * Usado para salvar frames de diagnóstico gerados no canvas do app.
+     */
+    @PluginMethod
+    public void writePng(PluginCall call) {
+        String name = call.getString("name", "videoplat-frame.png");
+        String b64 = call.getString("data", "");
+        Activity activity = getActivity();
+        if (activity == null) {
+            call.reject("Sem activity");
+            return;
+        }
+        try {
+            byte[] bytes = android.util.Base64.decode(b64, android.util.Base64.DEFAULT);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                try {
+                    activity.getContentResolver().delete(
+                            MediaStore.Downloads.EXTERNAL_CONTENT_URI,
+                            MediaStore.MediaColumns.DISPLAY_NAME + "=?",
+                            new String[] { name });
+                } catch (Exception ignored) {
+                }
+                ContentValues values = new ContentValues();
+                values.put(MediaStore.MediaColumns.DISPLAY_NAME, name);
+                values.put(MediaStore.MediaColumns.MIME_TYPE, "image/png");
+                values.put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS);
+                values.put(MediaStore.MediaColumns.IS_PENDING, 1);
+                Uri uri = activity.getContentResolver().insert(
+                        MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
+                if (uri == null) {
+                    call.reject("Falha ao criar arquivo em Download");
+                    return;
+                }
+                try (OutputStream out = activity.getContentResolver().openOutputStream(uri)) {
+                    if (out != null) {
+                        out.write(bytes);
+                    }
+                }
+                ContentValues done = new ContentValues();
+                done.put(MediaStore.MediaColumns.IS_PENDING, 0);
+                activity.getContentResolver().update(uri, done, null, null);
+                call.resolve();
+            } else {
+                File dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
+                File out = new File(dir, name);
+                try (FileOutputStream fos = new FileOutputStream(out)) {
+                    fos.write(bytes);
+                }
+                call.resolve();
+            }
+        } catch (Exception ex) {
+            call.reject("Falha ao escrever PNG: " + ex.getMessage(), ex);
         }
     }
 
