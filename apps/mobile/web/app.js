@@ -433,10 +433,9 @@ async function enumerateDevices() {
   render();
 }
 
-/* Cai para o preview nativo (CameraPreview) de forma definitiva: liga a
- * preferência "Câmera nativa" e persiste, para não voltar a tentar o WebView
- * quebrado a cada abertura. Usado quando o preview do WebView não entrega
- * imagem (bug MediaTek/Chromium). */
+/* Cai para o preview nativo (CameraPreview) de forma temporária: troca apenas
+ * nesta sessão, sem persistir a preferência. Assim, quem tem WebView que funciona
+ * pode desligar/ligar o modo nativo nos ajustes e testar o WebView. */
 async function useNativeFallback(reason) {
   diag('fallback', { reason: reason || '', forceNative: state.forceNative });
   if (!camPrev()) return false;
@@ -445,7 +444,7 @@ async function useNativeFallback(reason) {
   state._switchNative = true;
   const already = state.forceNative;
   state.forceNative = true;
-  savePrefs();
+  // NÃO salvar: não queremos alterar a preferência do usuário
   let ok = false;
   try {
     ok = await startNativePreview();
@@ -455,7 +454,7 @@ async function useNativeFallback(reason) {
   if (ok) {
     state.starting = false;
     if (!already && !state.toast) {
-      state.toast = { ok: true, msg: 'O preview da WebView não funciona neste aparelho. Ativamos a câmera nativa.' };
+      state.toast = { ok: true, msg: 'WebView não entregou frames neste teste. Usando câmera nativa nesta sessão.' };
       render();
     }
   }

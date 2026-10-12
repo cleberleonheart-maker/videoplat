@@ -1,7 +1,7 @@
 {
-  "version": "2.7",
-  "versionCode": 18,
+  "version": "2.8",
+  "versionCode": 19,
   "apkUrl": "https://github.com/cleberleonheart-maker/videoplat/releases/latest/download/CameraVideoPlat-release.apk",
-  "notes": "Modo WebView: evita abertura dupla da câmera nativa quando ocorre fallback simultâneo (no-frames + monitor) e persiste o fallback para nativo quando o preview do WebView fica preto/congelado.",
+  "notes": "Modo WebView: ao detectar que não entrega frames, troca para câmera nativa apenas nesta sessão (não persiste). Assim você pode tentar o WebView novamente desligando/ligando a opção.",
   "publishedAt": "2026-10-12"
 }
