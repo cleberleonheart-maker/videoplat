@@ -1490,6 +1490,22 @@ function cssAngle(rotation) {
   return (((rotation || 0) % 360) + 360) % 360;
 }
 
+/**
+ * Ângulo de rotação a aplicar no <video>. Algumas WebViews já aplicam a rotação
+ * do metadado do MP4 sozinhas (e aí reportam videoWidth/Height trocados em
+ * relação ao arquivo). Nesse caso NÃO devemos girar de novo. Se a WebView não
+ * aplicar, giramos nós.
+ */
+function videoCssAngle(rotation, vw, vh, rawW, rawH) {
+  const r = cssAngle(rotation);
+  if (!r) return 0;
+  if (rawW && rawH && vw && vh) {
+    const swapped = Math.abs(vw - rawH) <= 4 && Math.abs(vh - rawW) <= 4;
+    if (swapped) return 0;
+  }
+  return r;
+}
+
 /* Diagnóstico: acumula e grava em /sdcard/Download/videoplat-diag.txt */
 const DIAG = { lines: [] };
 let ORIENT_DIAG = true; // temporário: salva quadros de teste de orientação
@@ -1525,7 +1541,7 @@ function captureVideoPoster(url, rotation, rawW, rawH) {
         const vw = vid.videoWidth;
         const vh = vid.videoHeight;
         if (!vw || !vh) return finish(null);
-        let rot = cssAngle(rotation);
+        let rot = videoCssAngle(rotation, vw, vh, rawW, rawH);
         diag("poster", { rotation: rotation, rot: rot, rawW: rawW, rawH: rawH, vw: vw, vh: vh });
         const swap = rot === 90 || rot === 270;
         const dispW = swap ? vh : vw;
@@ -2994,8 +3010,15 @@ function buildPreviewModal(item) {
               video.src = u;
               if (!rotation) return;
               const apply = () => {
-                const deg = cssAngle(rotation);
+                const deg = videoCssAngle(
+                  rotation,
+                  video.videoWidth,
+                  video.videoHeight,
+                  item._rawW,
+                  item._rawH,
+                );
                 if (deg) video.style.transform = `rotate(${deg}deg)`;
+                else video.style.transform = '';
                 diag("preview", {
                   rot: rotation,
                   deg: deg,
