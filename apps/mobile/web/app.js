@@ -950,6 +950,7 @@ async function startNativePreview() {
       toBack: true,
       enableZoom: true,
       disableAudio: true,
+      disableExifHeaderStripping: false
     });
     state.nativeMode = true;
     state.ready = true;

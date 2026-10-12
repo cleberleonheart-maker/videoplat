@@ -1,7 +1,7 @@
 {
-  "version": "2.9",
-  "versionCode": 20,
+  "version": "3.0",
+  "versionCode": 21,
   "apkUrl": "https://github.com/cleberleonheart-maker/videoplat/releases/latest/download/CameraVideoPlat-release.apk",
-  "notes": "Corrige chamada do setFlashMode (lanterna) no modo nativo: passa o parametro no formato esperado pelo plugin (@capacitor-community/camera-preview v8.0.2).",
+  "notes": "Corrige foto lateralizada no modo nativo: passa disableExifHeaderStripping=false para o CameraPreview (garante rotacao correta).",
   "publishedAt": "2026-10-12"
 }
